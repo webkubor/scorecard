@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="GHAM">
+  <!--
+    评分环 —— 沿用产品里已有的视觉语言：质检看板每张卡片上那个 conic-gradient 分数环。
+    开口在右上，缺口处一个圆点，读作「还差一段没走完」。
+
+    设计方向由 museav-cli 出图定下（AI 出的位图见 public/logo.png），这里是矢量化重绘：
+    favicon 要在 16px 下还认得出，位图缩到那个尺寸会糊，而且环的粗细必须处处相等 ——
+    AI 出图做不到这一点，它画的弧右下比左上略粗。
+
+    currentColor 而不是写死颜色：深色底用主题色、浅色底能被调用方覆盖，一份文件两处用。
+  -->
+  <path
+    d="M 39.52 11.33 A 22 22 0 1 0 52.67 24.48"
+    stroke="currentColor"
+    stroke-width="8"
+    stroke-linecap="round"
+  />
+  <circle cx="47.56" cy="16.44" r="5" fill="currentColor" />
+</svg>

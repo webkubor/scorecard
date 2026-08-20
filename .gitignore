@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+.vite
+*.log
+
+# 质检历史库 —— 运行时产物，不进仓库
+data/*.sqlite
+data/*.sqlite-*
+
+# 环境变量（含 SCORECARD_GITHUB_TOKEN，严禁提交）
+.env
+.env.*
+*.local

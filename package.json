@@ -1,0 +1,29 @@
+{
+  "name": "scorecard",
+  "private": false,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "开源项目八维度质检 —— 粘一个 GitHub URL，拿到雷达图、整改清单和一张可分享长图。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webkubor/scorecard.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "bun server/index.js",
+    "start": "bun run build && bun run server",
+    "check:dimensions": "node scripts/check-dimensions.mjs"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.23",
+    "hono": "^4.13.3",
+    "vue": "^3.4.38"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.3",
+    "vite": "^5.4.6"
+  }
+}

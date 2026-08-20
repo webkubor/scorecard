@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GHAM">
+  <!--
+    favicon 和 logo.svg 是同一个标记，但不是同一份文件，区别是刻意的：
+    - 这里带深色圆角底，标签栏无论浅色还是深色都看得清；logo.svg 是透明的，跟着页面走
+    - 环半径收到 18（logo 是 22）—— 16px 下留白太多会让图形本身小到认不出
+    - 颜色写死主题色而不是 currentColor：favicon 没有继承环境，必须自带颜色
+  -->
+  <rect width="64" height="64" rx="14" fill="#161b22"/>
+  <path
+    d="M 38.16 15.09 A 18 18 0 1 0 48.91 25.84"
+    fill="none"
+    stroke="#7c94ad"
+    stroke-width="7"
+    stroke-linecap="round"
+  />
+  <circle cx="44.73" cy="19.27" r="4.5" fill="#7c94ad"/>
+</svg>
