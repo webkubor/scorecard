@@ -467,7 +467,7 @@ onMounted(() => {
     <!--  ERROR                                                      -->
     <!-- ========================================================== -->
     <div v-else-if="stage === 'error'" class="sc-loading">
-      <h2 class="sc-h2">❌ {{ errorMsg }}</h2>
+      <h2 class="sc-h2"><Icon name="cross" :size="16" class="sc-err-icon" /> {{ errorMsg }}</h2>
       <p class="sc-sub">可能是仓库不存在、token 私有，或 GitHub 限速中。</p>
       <button class="btn primary" @click="reset">重新输入</button>
     </div>
@@ -549,14 +549,18 @@ onMounted(() => {
       <!-- 文案摘要（不截图） -->
       <div class="sc-summary">
         <div class="sc-summary-section">
-          <h3>✨ 你的强项</h3>
+          <h3 class="sc-summary-title">
+            <Icon name="star" :size="14" class="sc-summary-icon ok" /> 你的强项
+          </h3>
           <ul v-if="strengths.length">
             <li v-for="s in strengths" :key="s.name"><strong>{{ s.name }}</strong>：{{ (s.evidence[0] || '表现不错').slice(0, 60) }}</li>
           </ul>
           <p v-else class="muted">暂无突出维度，继续打磨。</p>
         </div>
         <div class="sc-summary-section">
-          <h3>⚠️ 下一步该</h3>
+          <h3 class="sc-summary-title">
+            <Icon name="warning" :size="14" class="sc-summary-icon warn" /> 下一步该
+          </h3>
           <ul v-if="improvements.length">
             <li v-for="d in improvements" :key="d.name">
               <strong>{{ d.name }}</strong>：{{ d.gaps[0] || '待补' }}
@@ -571,10 +575,10 @@ onMounted(() => {
         <!-- 主操作是「复制 Markdown」：它是唯一能让别人真的把项目改好的形态 ——
              粘给 AI 就能照着改，改完再回来测一次分数。 -->
         <button class="btn primary" :disabled="shareBusy" @click="copyMarkdown">
-          <Icon name="save" :size="13" /> 📋 复制 Markdown（可直接喂给 AI）
+          <Icon name="copy" :size="13" /> 复制 Markdown（可直接喂给 AI）
         </button>
         <button class="btn" :disabled="shareBusy" @click="downloadMarkdown">
-          <Icon name="save" :size="13" /> 下载 .md
+          <Icon name="download" :size="13" /> 下载 .md
         </button>
         <button class="btn ghost" @click="copyShareLink">
           <Icon name="link" :size="13" /> 复制链接
@@ -931,6 +935,14 @@ onMounted(() => {
   font-weight: 600;
   color: var(--text-muted);
 }
+.sc-summary-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sc-summary-icon.ok { color: var(--score-top); }
+.sc-summary-icon.warn { color: var(--score-warn); }
+.sc-err-icon { color: var(--score-bad); vertical-align: -2px; }
 .sc-summary ul {
   margin: 0;
   padding-left: 18px;
