@@ -169,12 +169,15 @@ function reset() {
 // ---------- 雷达图 / 维度条 ----------
 const DIMS_MAX = 10
 
+// 只有拿到证据的维度才进雷达图。把「判不了」当 0 画，图上会凹一个缺口，
+// 看起来像这一维很差 —— 而事实是我们没量到，不该用图形暗示一个结论。
+const scoredDims = computed(() => (report.value?.dims || []).filter((d) => d.score != null))
+
 const radarPolygon = computed(() => {
-  if (!report.value?.dims) return ''
-  const n = report.value.dims.length
+  const n = scoredDims.value.length
   if (!n) return ''
   const cx = 110, cy = 110, r = 88
-  return report.value.dims
+  return scoredDims.value
     .map((d, i) => {
       const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
       const rr = (d.score / DIMS_MAX) * r
@@ -186,10 +189,10 @@ const radarPolygon = computed(() => {
 })
 
 const radarAxes = computed(() => {
-  if (!report.value?.dims) return []
-  const n = report.value.dims.length
+  const n = scoredDims.value.length
+  if (!n) return []
   const cx = 110, cy = 110, r = 88
-  return report.value.dims.map((d, i) => {
+  return scoredDims.value.map((d, i) => {
     const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
     return {
       x: cx + Math.cos(angle) * r,
@@ -212,12 +215,15 @@ function bandLabel(score) {
   return '✕ 起步阶段'
 }
 
+// 排序表：有结论的按分数升序在前，判不了的沉到最后
 const sortedDims = computed(() => {
-  if (!report.value?.dims) return []
-  return [...report.value.dims].sort((a, b) => a.score - b.score)
+  const all = report.value?.dims || []
+  const scored = all.filter((d) => d.score != null).sort((a, b) => a.score - b.score)
+  const unknown = all.filter((d) => d.score == null)
+  return [...scored, ...unknown]
 })
-const strengths = computed(() => sortedDims.value.filter((d) => d.score >= 8).reverse().slice(0, 2))
-const improvements = computed(() => sortedDims.value.filter((d) => d.score < 6).slice(0, 2))
+const strengths = computed(() => sortedDims.value.filter((d) => d.score != null && d.score >= 8).reverse().slice(0, 2))
+const improvements = computed(() => sortedDims.value.filter((d) => d.score != null && d.score < 6).slice(0, 2))
 
 // ---------- 分享 ----------
 const shareBusy = ref(false)
@@ -496,6 +502,13 @@ onMounted(() => {
               <Icon name="star" :size="13" /> {{ report.stars || 0 }} stars
               · 类型 {{ report.type }}
             </div>
+            <!-- 有维度没量到就得说清楚：否则这个分数看起来像八维都核实过 -->
+            <div v-if="report.scoredCount && report.scoredCount < 8" class="sc-partial-note">
+              按 {{ report.scoredCount }}/8 维平均
+              <span v-if="report.inconclusiveDims?.length">
+                · {{ report.inconclusiveDims.join('、') }}读不到判据，未计入
+              </span>
+            </div>
           </div>
         </div>
 
@@ -518,8 +531,8 @@ onMounted(() => {
 
             <!-- 数据点 -->
             <circle v-for="(d, i) in report.dims" :key="`pt-${i}`"
-              :cx="110 + Math.cos(-Math.PI / 2 + (i * 2 * Math.PI) / report.dims.length) * (d.score / DIMS_MAX) * 88"
-              :cy="110 + Math.sin(-Math.PI / 2 + (i * 2 * Math.PI) / report.dims.length) * (d.score / DIMS_MAX) * 88"
+              :cx="110 + Math.cos(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * 88"
+              :cy="110 + Math.sin(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * 88"
               r="2.5" class="sc-radar-pt" />
 
             <!-- 维度标签 -->
@@ -532,10 +545,29 @@ onMounted(() => {
 
         <!-- 维度条形 -->
         <div class="sc-dims">
-          <div v-for="d in sortedDims" :key="d.name" class="sc-dim-row">
+          <div
+            v-for="d in sortedDims"
+            :key="d.name"
+            class="sc-dim-row"
+            :class="{ unknown: d.score == null }"
+            :title="d.score == null
+              ? '本引擎读不到这一维的判据，未计入总分'
+              : (d.unverifiable ? `其中 ${d.unverifiable} 分的判据核实不了，已从该维满分中剔除` : '')"
+          >
             <span class="sc-dim-name">{{ d.name }}</span>
-            <div class="sc-bar"><i :style="{ width: (d.score * 10) + '%', background: bandColor(d.score) }"/></div>
-            <span class="sc-dim-score" :style="{ color: bandColor(d.score) }">{{ d.score }}</span>
+            <!-- 判不了的维度画一条虚线槽，不画填充 —— 填 0 会被读成「这维得 0 分」 -->
+            <div class="sc-bar">
+              <i
+                v-if="d.score != null"
+                :style="{ width: (d.score * 10) + '%', background: bandColor(d.score) }"
+              />
+            </div>
+            <span
+              v-if="d.score != null"
+              class="sc-dim-score"
+              :style="{ color: bandColor(d.score) }"
+            >{{ d.score }}<em v-if="d.unverifiable" class="sc-dim-partial">*</em></span>
+            <span v-else class="sc-dim-score sc-dim-unknown">判不了</span>
           </div>
         </div>
 
@@ -900,6 +932,29 @@ onMounted(() => {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-weight: 700;
   text-align: right;
+}
+/* 判不了：虚线空槽 + 灰字，和「得分很低」在视觉上区分开 */
+.sc-partial-note {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.sc-dim-row.unknown .sc-bar {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.sc-dim-unknown {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+/* 星号：这一维有部分判据核实不了，分数是归一化来的 */
+.sc-dim-partial {
+  font-style: normal;
+  color: var(--text-dim);
+  margin-left: 1px;
 }
 
 .sc-card-foot {

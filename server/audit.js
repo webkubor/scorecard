@@ -28,6 +28,11 @@ dayjs.locale('zh-cn')
 
 const GH = 'https://api.github.com'
 
+// tags API 一次取多少个。GitHub 不保证按时间或版本排序 —— golang/go 取前 10 个
+// 拿到的全是 2012 年的 weekly.*，于是被判「没有版本 tag」。取样开大能救小项目，
+// 但对上千个 tag 的仓库依然可能全都取不到版本号，所以还要配合「取样是否已满」判定。
+const TAG_SAMPLE = 100
+
 /** 评分基准，照搬 SKILL.md「评分基准」一节 */
 export const SCORE_BANDS = [
   { min: 9, label: '同品类头部', hint: '有渠道、有度量、发布全自动、issue 响应 < 7 天' },
@@ -62,6 +67,29 @@ function detectType(files, pkg) {
 }
 
 const clamp = (n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10))
+
+/**
+ * 维度评分收口 —— 「查不到」的判据不算项目的错。
+ *
+ * 每个维度满分 10，由若干判据分摊。但有些判据对某类项目根本无从核实：
+ * 质量护栏的 test/lint 判据读的是 package.json，Rust 项目没有这个文件 ——
+ * 那不代表它没测试（`cargo test` 不需要声明），只代表本引擎看不到。
+ * 同理：无清单文件时查不了 registry；README 取不到时判不了文档结构；
+ * traffic 需要 push 权限，公共服务永远读不到。
+ *
+ * 原先这些都当成「不满足」扣分，于是非 JS、非 npm 的项目被系统性压低 ——
+ * 实测 19 个知名项目里 CPython 4.8、golang/go 5.7，而它们显然不是差项目。
+ *
+ * 所以：把无法核实的分值 unv 从分母里去掉，用剩下能核实的部分归一化回 10 分制。
+ * 「查到了但不满足」仍然扣分 —— 否则弱项会被伪装成「判不了」，分数就失去意义了。
+ * 全维都无从核实时返回 null，该维不进总分平均。
+ */
+function normalizeDim(score, unv) {
+  const denom = 10 - unv
+  // 剩下能核实的判据不足 2 分，等于这一维基本没量到东西，不给分数
+  if (denom < 2) return null
+  return clamp((score / denom) * 10)
+}
 
 /**
  * 各生态的清单文件 → 包名 → registry 查询地址。
@@ -141,7 +169,7 @@ export async function auditProject({ owner, repo, token }) {
     gh(`/repos/${full}/readme`, token, { raw: true }),
     gh(`/repos/${full}/contents`, token),
     gh(`/repos/${full}/releases?per_page=5`, token),
-    gh(`/repos/${full}/tags?per_page=10`, token),
+    gh(`/repos/${full}/tags?per_page=${TAG_SAMPLE}`, token),
     gh(`/repos/${full}/actions/runs?per_page=5`, token),
     gh(`/repos/${full}/issues?state=open&per_page=30`, token),
   ])
@@ -172,23 +200,34 @@ export async function auditProject({ owner, repo, token }) {
     topics.length >= 6 ? ev.push(`topics ${topics.length} 个`) : gaps.push(`topics 只有 ${topics.length} 个（应 ≥6，这是被搜到的主要途径）`)
     r.homepage ? ev.push(`homepage: ${r.homepage}`) : gaps.push('homepage 未配置')
 
-    const badges = (readme.match(/!\[[^\]]*\]\(https:\/\/img\.shields\.io[^)]*\)/g) || []).length
-    if (badges >= 4 && badges <= 6) ev.push(`徽章 ${badges} 个（4-6 为宜）`)
-    else if (badges > 6) gaps.push(`徽章 ${badges} 个，超过 6 个反而稀释可信度`)
-    else gaps.push(`徽章 ${badges} 个（应 4-6 个：CI/license/版本/下载量）`)
-
-    const imgs = (readme.match(/!\[[^\]]*\]\([^)]+\)/g) || []).length
-    imgs > 0 ? ev.push(`README 含 ${imgs} 张图`) : gaps.push('README 没有任何图片')
-
+    const manual = ['README 首屏 10 秒清晰度', 'Social Preview 是否已在 Settings 上传 2:1 图', 'logo 是否 1:1 透明底']
     let score = 2
+    let unv = 0
+
+    let badges = 0
+    let imgs = 0
+    if (readme) {
+      badges = (readme.match(/!\[[^\]]*\]\(https:\/\/img\.shields\.io[^)]*\)/g) || []).length
+      if (badges >= 4 && badges <= 6) ev.push(`徽章 ${badges} 个（4-6 为宜）`)
+      else if (badges > 6) gaps.push(`徽章 ${badges} 个，超过 6 个反而稀释可信度`)
+      else gaps.push(`徽章 ${badges} 个（应 4-6 个：CI/license/版本/下载量）`)
+
+      imgs = (readme.match(/!\[[^\]]*\]\([^)]+\)/g) || []).length
+      imgs > 0 ? ev.push(`README 含 ${imgs} 张图`) : gaps.push('README 没有任何图片')
+    } else {
+      // README 取不到（不存在 / 私有 / API 失败）—— 徽章和配图无从判断
+      unv += 3
+      manual.push('README 取不到，徽章与配图判不了 —— 这 3 分已从满分中剔除')
+    }
+
     if (r.description) score += 2
     if (topics.length >= 6) score += 2
     if (r.homepage) score += 1
     if (badges >= 4 && badges <= 6) score += 1.5
     if (imgs > 0) score += 1.5
     dims.push({
-      key: 'facade', name: '门面', score: clamp(score), evidence: ev, gaps,
-      manual: ['README 首屏 10 秒清晰度', 'Social Preview 是否已在 Settings 上传 2:1 图', 'logo 是否 1:1 透明底'],
+      key: 'facade', name: '门面', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
     })
   }
 
@@ -201,9 +240,17 @@ export async function auditProject({ owner, repo, token }) {
     const ev = [], gaps = []
     const manual = ['awesome-list / marketplace 收录情况', 'HN/Reddit/V2EX/掘金首发帖']
     let score = 0
+    let unv = 0
 
     // ── registry：按清单文件挑对应生态，不再假设人人都发 npm
     const m = MANIFESTS.find((x) => files.some((f) => x.file.test(f)))
+    if (!m) {
+      // 根目录没有任何认得的清单文件 —— 查不到 registry，不代表没有分发渠道。
+      // CPython 走 python.org 安装包、Go 走 go.dev、很多项目走系统包管理器，
+      // 这些本引擎都看不到。把这 4 分从满分里剔除，而不是判它「没发布」。
+      unv += 4
+      manual.push('根目录没有认得的包清单，查不到 registry 记录 —— 这 4 分已从满分中剔除，请自行核对官网/系统包管理器渠道')
+    }
     if (m) {
       const fname = files.find((f) => m.file.test(f))
       let name = null
@@ -231,12 +278,17 @@ export async function auditProject({ owner, repo, token }) {
     }
 
     // ── README 安装命令：最贴近「陌生人能不能装上」的证据
-    const hits = INSTALL_HINTS.filter((h) => h.re.test(readme))
-    if (hits.length) {
-      ev.push(`README 给了安装方式：${hits.slice(0, 3).map((h) => h.how).join('、')}`)
-      score += 3
+    if (!readme) {
+      unv += 3
+      manual.push('README 取不到，判不了安装说明 —— 这 3 分已从满分中剔除')
     } else {
-      gaps.push('README 里找不到一条可以照抄的安装命令')
+      const hits = INSTALL_HINTS.filter((h) => h.re.test(readme))
+      if (hits.length) {
+        ev.push(`README 给了安装方式：${hits.slice(0, 3).map((h) => h.how).join('、')}`)
+        score += 3
+      } else {
+        gaps.push('README 里找不到一条可以照抄的安装命令')
+      }
     }
 
     // ── release 产物：官方下载渠道，公开可读，不需要任何权限
@@ -258,7 +310,8 @@ export async function auditProject({ owner, repo, token }) {
     }
 
     dims.push({
-      key: 'distribution', name: '分发', score: clamp(score + 1), evidence: ev, gaps, manual,
+      key: 'distribution', name: '分发', score: normalizeDim(score + 1, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
     })
   }
 
@@ -266,10 +319,26 @@ export async function auditProject({ owner, repo, token }) {
   {
     const ev = [], gaps = []
     let score = 1
+    let tagUnknown = 0 // tag 取样判不准时要剔除的分值
+    // 判据的意图是「用户能不能固定一个版本」，不是「tag 是否严格符合 semver 规范」。
+    // 原正则只认 v1.2.3 / 1.2.3，于是 Go 官方仓库的 go1.21.0 被判成「没有 semver tag」——
+    // 一个每三个月发一版、tag 排得整整齐齐的项目，因为前缀不合口味就丢 3 分。
+    // 常见的等价写法：go1.21.0（Go）、release-1.2.3、r1.2.3、RELEASE.2024-01-01。
     const tagList = tags.ok ? tags.data : []
-    const semver = tagList.filter((t) => /^v?\d+\.\d+\.\d+/.test(t.name))
-    if (semver.length) { ev.push(`semver tag ${semver.length} 个，最新 ${semver[0].name}`); score += 3 }
-    else gaps.push('没有 semver tag —— 用户无法固定版本')
+    const versioned = tagList.filter((t) => /^(?:v|go|r|rel(?:ease)?[-_/]?)?\d+\.\d+/i.test(t.name))
+    if (versioned.length) {
+      ev.push(`版本 tag ${versioned.length} 个，最新 ${versioned[0].name}`)
+      score += 3
+    } else if (tagList.length >= TAG_SAMPLE) {
+      // 取样满了说明 tag 还有更多没看到，而 GitHub 不保证返回顺序 ——
+      // 「这 100 个里没有版本号」推不出「这个项目没有版本 tag」。
+      tagUnknown = 3
+      ev.push(`tag 超过 ${TAG_SAMPLE} 个，取样里没有版本号格式的（GitHub 不按版本序返回，判不准）`)
+    } else if (tagList.length) {
+      gaps.push(`${tagList.length} 个 tag 里没有可固定版本号的 —— 用户无法锁定版本`)
+    } else {
+      gaps.push('没有任何 tag —— 用户无法锁定版本')
+    }
 
     const rel = releases.ok ? releases.data : []
     if (rel.length) { ev.push(`GitHub Release ${rel.length} 个，最新 ${rel[0].tag_name}`); score += 2 }
@@ -277,31 +346,69 @@ export async function auditProject({ owner, repo, token }) {
 
     hasFile(/^CHANGELOG/i) ? (score += 2, ev.push('有 CHANGELOG')) : gaps.push('没有 CHANGELOG —— 升级的人不知道变了什么')
 
+    const manual = ['Release 资产直链是否真的 200', '仓库里有没有误提交 dist/build 产物']
+    let unv = tagUnknown
+    if (tagUnknown) manual.push(`版本 tag 是否规范（tag 太多，取样判不准）—— 这 ${tagUnknown} 分已从满分中剔除`)
     const runList = runs.ok ? runs.data?.workflow_runs || [] : []
     if (runList.length) {
       const last = runList[0]
       if (last.conclusion === 'success') { ev.push(`CI 最近一次 success（${last.name}）`); score += 2 }
       else { gaps.push(`CI 最近一次是 ${last.conclusion || last.status}（${last.name}）—— 红着的 CI 比没有 CI 更伤`); score += 0.5 }
-    } else gaps.push('没有 CI 运行记录')
+    } else {
+      // 没有 Actions 记录不等于没有 CI —— 可能跑在 Travis / CircleCI / GitLab CI / Jenkins 上，
+      // 那些的运行状态本引擎读不到。根目录有对应配置就判为「看不到」而非「没有」。
+      const external = files.filter((f) =>
+        /^(\.travis\.yml|\.circleci|Jenkinsfile|azure-pipelines\.ya?ml|\.gitlab-ci\.yml|appveyor\.yml|\.drone\.yml|\.buildkite)$/i.test(f)
+      )
+      if (external.length) {
+        ev.push(`CI 配置在 ${external[0]}（外部服务，运行状态本引擎读不到）`)
+        unv += 2
+        manual.push(`${external[0]} 的最近一次构建是否绿 —— 这 2 分已从满分中剔除`)
+      } else {
+        gaps.push('没有 CI 运行记录')
+      }
+    }
 
     dims.push({
-      key: 'release', name: '发布工程', score: clamp(score), evidence: ev, gaps,
-      manual: ['Release 资产直链是否真的 200', '仓库里有没有误提交 dist/build 产物'],
+      key: 'release', name: '发布工程', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
     })
   }
 
   // ④ 质量护栏
   {
     const ev = [], gaps = []
+    const manual = ['测试是否真在 CI 里跑', 'commit message 是否守 conventional commits']
     let score = 1
+    let unv = 0
+
+    // test / lint 判据原先只读 package.json.scripts —— 那是 JS 生态的表达方式。
+    // Rust 的 `cargo test`、Go 的 `go test`、Python 的 pytest 都不需要在清单里声明，
+    // 所以「没有 package.json」不等于「没有测试」，只等于本引擎看不到。
     const scripts = pkg?.scripts || {}
-    scripts.test ? (score += 3, ev.push(`有 test 脚本：${scripts.test.slice(0, 40)}`)) : gaps.push('package.json 没有 test 脚本')
-    ;(scripts.lint || scripts.typecheck) ? (score += 2, ev.push('有 lint/typecheck 脚本')) : gaps.push('没有 lint/typecheck')
+    if (pkg) {
+      scripts.test ? (score += 3, ev.push(`有 test 脚本：${scripts.test.slice(0, 40)}`)) : gaps.push('package.json 没有 test 脚本')
+      ;(scripts.lint || scripts.typecheck) ? (score += 2, ev.push('有 lint/typecheck 脚本')) : gaps.push('没有 lint/typecheck')
+    } else {
+      // 换个能核实的角度：这些文件的存在本身就是测试/静态检查的声明
+      const cfgs = files.filter((f) =>
+        /^(Makefile|justfile|tox\.ini|pytest\.ini|noxfile\.py|\.pre-commit-config\.yaml|rustfmt\.toml|clippy\.toml|\.golangci\.ya?ml|\.eslintrc|\.ruff\.toml)$/i.test(f)
+      )
+      if (cfgs.length) {
+        score += 3
+        ev.push(`非 JS 项目，测试/检查入口来自：${cfgs.slice(0, 3).join('、')}`)
+        unv += 2 // 还剩 lint/typecheck 那部分判不准
+      } else {
+        unv += 5
+        manual.push('没有 package.json，本引擎读不到测试/lint 的声明方式（cargo test / go test / pytest 都无需声明）—— 这 5 分已从满分中剔除')
+      }
+    }
+
     hasFile(/^\.github$/) ? (score += 2, ev.push('有 .github（CI 配置）')) : gaps.push('没有 .github 目录')
     if (files.some((f) => /^(test|tests|__tests__|spec)$/i.test(f))) { score += 2; ev.push('有独立测试目录') }
     dims.push({
-      key: 'quality', name: '质量护栏', score: clamp(score), evidence: ev, gaps,
-      manual: ['测试是否真在 CI 里跑', 'commit message 是否守 conventional commits'],
+      key: 'quality', name: '质量护栏', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
     })
   }
 
@@ -324,7 +431,9 @@ export async function auditProject({ owner, repo, token }) {
     if (days <= 90) { ev.push(`${dayjs(r.pushed_at).fromNow()}有提交`); score += 2 }
     else gaps.push(`最后一次提交在${dayjs(r.pushed_at).fromNow()} —— 看起来已停更`)
 
-    dims.push({ key: 'community', name: '社区卫生', score: clamp(score), evidence: ev, gaps, manual: [] })
+    // 这一维的判据（license / contributing / issue 模板 / issue 时效 / 最后提交）
+    // 全部来自 GitHub API，没有「读不到」的情况，所以 unv 恒为 0。
+    dims.push({ key: 'community', name: '社区卫生', score: normalizeDim(score, 0), unverifiable: 0, evidence: ev, gaps, manual: [] })
   }
 
   // ⑥ 文档
@@ -335,15 +444,27 @@ export async function auditProject({ owner, repo, token }) {
     // 真实标题很少是光秃秃的 `## 安装` —— typora-Bloom-theme 写的是 `## 快速安装`，
     // 早先那版正则要求关键词紧接 #，于是把一个有完整安装说明的 README 判成「没有安装章节」。
     // 误报比漏报更伤：面板一旦冤枉过一次，人就不信它了。
+    const manual = ['死链全量体检']
+    let unv = 0
     const sec = (words) => new RegExp(`^#{1,4}[^\\n]*(${words})`, 'im').test(readme)
-    if (readme.length > 800) { ev.push(`README ${readme.length} 字符`); score += 2 }
-    else gaps.push(`README 只有 ${readme.length} 字符，撑不起「这是什么、怎么装、怎么用」`)
-    sec('install|安装|部署|上手') ? (score += 2, ev.push('有安装章节')) : gaps.push('README 没有安装章节')
-    sec('usage|quick\\s*start|getting\\s*started|快速开始|快速上手|使用|用法|怎么用') ? (score += 2, ev.push('有快速开始/使用章节')) : gaps.push('README 没有快速开始')
-    sec('api|配置|config|options|参数|选项|自定义') ? (score += 1.5, ev.push('有 API/配置章节')) : gaps.push('没有 API/配置参考')
-    sec('faq|troubleshoot|常见问题|故障|排查|问题') ? (score += 1, ev.push('有 FAQ/故障排查')) : gaps.push('没有 FAQ/故障排查')
+    if (!readme) {
+      // 这一维几乎全靠 README —— 取不到就整维无结论，不进总分平均。
+      // 给 0 分是错的：那是在说「这个项目文档很差」，而我们其实什么都没读到。
+      unv += 8.5
+      manual.push('README 取不到，文档结构完全判不了 —— 该维不计入总分')
+    } else {
+      if (readme.length > 800) { ev.push(`README ${readme.length} 字符`); score += 2 }
+      else gaps.push(`README 只有 ${readme.length} 字符，撑不起「这是什么、怎么装、怎么用」`)
+      sec('install|安装|部署|上手') ? (score += 2, ev.push('有安装章节')) : gaps.push('README 没有安装章节')
+      sec('usage|quick\\s*start|getting\\s*started|快速开始|快速上手|使用|用法|怎么用') ? (score += 2, ev.push('有快速开始/使用章节')) : gaps.push('README 没有快速开始')
+      sec('api|配置|config|options|参数|选项|自定义') ? (score += 1.5, ev.push('有 API/配置章节')) : gaps.push('没有 API/配置参考')
+      sec('faq|troubleshoot|常见问题|故障|排查|问题') ? (score += 1, ev.push('有 FAQ/故障排查')) : gaps.push('没有 FAQ/故障排查')
+    }
     if (hasFile(/^(AGENTS?\.md|SKILL\.md|llms\.txt)$/i)) { score += 0.5; ev.push('有 agent 可读文档（加分项）') }
-    dims.push({ key: 'docs', name: '文档', score: clamp(score), evidence: ev, gaps, manual: ['死链全量体检'] })
+    dims.push({
+      key: 'docs', name: '文档', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
+    })
   }
 
   // ⑦ 安全
@@ -355,7 +476,7 @@ export async function auditProject({ owner, repo, token }) {
     if (hasFile(/^(\.gitignore)$/)) { score += 2; ev.push('有 .gitignore') } else gaps.push('没有 .gitignore')
     if (pkg?.dependencies && Object.keys(pkg.dependencies).length) ev.push(`${Object.keys(pkg.dependencies).length} 个运行时依赖`)
     dims.push({
-      key: 'security', name: '安全', score: clamp(score), evidence: ev, gaps,
+      key: 'security', name: '安全', score: normalizeDim(score, 0), unverifiable: 0, evidence: ev, gaps,
       manual: ['git history 明文密钥扫描', 'npm audit / 等价依赖审计'],
     })
   }
@@ -375,11 +496,13 @@ export async function auditProject({ owner, repo, token }) {
     // 这个权限 —— 所以它 401 是「我们看不到」，不是「项目没有度量」。
     // 原先把它记成 gap 并扣 3 分，等于每个被质检的项目都无谓损失 3 分，
     // 衡量的是我们的权限而不是项目本身。改为归入 manual，不扣分。
+    let unv = 0
     const traffic = await gh(`/repos/${full}/traffic/views`, token)
     if (traffic.ok) {
       ev.push(`近两周 ${traffic.data.count} 次浏览 / ${traffic.data.uniques} 独立访客`)
       score += 2
     } else {
+      unv += 2
       manual.push('近两周 traffic（需仓库 push 权限，公共质检读不到 —— 请自己在 Insights → Traffic 看）')
     }
 
@@ -395,13 +518,30 @@ export async function auditProject({ owner, repo, token }) {
 
     if (r.forks_count > 0) { ev.push(`${r.forks_count} fork`); score += 1 }
     if (r.homepage) { score += 1; ev.push('有 homepage，可挂埋点') }
-    dims.push({ key: 'metrics', name: '度量', score: clamp(score), evidence: ev, gaps, manual })
+    dims.push({
+      key: 'metrics', name: '度量', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
+    })
   }
 
-  const score = clamp(dims.reduce((s, d) => s + d.score, 0) / dims.length)
+  // 总分只对「有结论」的维度求平均。某一维完全无从核实（score === null）时
+  // 把它按 0 分算进平均，等于拿我们的观测盲区去扣项目的分。
+  const scored = dims.filter((d) => d.score != null)
+  const inconclusive = dims.filter((d) => d.score == null).map((d) => d.name)
+  const score = scored.length
+    ? clamp(scored.reduce((s, d) => s + d.score, 0) / scored.length)
+    : null
 
-  // 整改清单按「影响 ÷ 成本」排：分越低的维度影响越大，排前面
-  const todos = dims
+  if (!scored.length) {
+    return {
+      error: '八个维度都无从核实（仓库可能是空的，或 README/内容都读不到）',
+      score: null, project: full, dims,
+    }
+  }
+
+  // 整改清单按「影响 ÷ 成本」排：分越低的维度影响越大，排前面。
+  // 无结论的维度不进清单 —— 我们没读到东西，给不出「该改什么」。
+  const todos = scored
     .filter((d) => d.gaps.length)
     .sort((a, b) => a.score - b.score)
     .flatMap((d) => d.gaps.map((g) => ({ dim: d.name, dimScore: d.score, text: g })))
@@ -409,6 +549,9 @@ export async function auditProject({ owner, repo, token }) {
   return {
     project: full, type, score, band: bandOf(score).label,
     stars: r.stargazers_count, dims, todos,
+    // 让前端和报告都能说清「这次有几维没量到」，而不是让人以为八维都算了
+    scoredCount: scored.length,
+    inconclusiveDims: inconclusive,
     ts: new Date().toISOString(),
   }
 }
@@ -431,6 +574,14 @@ export function reportMarkdown(a, { site = '' } = {}) {
   L.push(`**${a.score} / 10** — ${a.band}`)
   L.push('')
   L.push(`项目类型 \`${a.type}\` · ${a.stars} star · 生成于 ${dayjs(a.ts).format('YYYY-MM-DD HH:mm')}`)
+  // 说清这个分数是几维算出来的。有维度没量到却不讲，读的人会以为八维都核实过了。
+  if (a.scoredCount != null && a.scoredCount < 8) {
+    L.push('')
+    L.push(`> 本次只有 ${a.scoredCount} 个维度拿到了可核实的证据，总分是这几维的平均。`)
+    if (a.inconclusiveDims?.length) {
+      L.push(`> 未计入：${a.inconclusiveDims.join('、')} —— 不是这些维度不合格，是本引擎读不到判据。`)
+    }
+  }
   L.push('')
   L.push('八维度标准来自 [project-maturity-audit](https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit)：')
   L.push('评的不是「代码好不好」，是「陌生人会不会在 10 秒内 star、安装、信任它」。')
@@ -441,7 +592,13 @@ export function reportMarkdown(a, { site = '' } = {}) {
   L.push('| 维度 | 得分 | | 最该补的一件事 |')
   L.push('|---|---:|---|---|')
   for (const d of a.dims) {
-    L.push(`| ${d.name} | ${d.score} | \`${pct(d.score)}\` | ${d.gaps[0] || '—'} |`)
+    if (d.score == null) {
+      L.push(`| ${d.name} | — | \`判不了\` | 本引擎读不到这一维的判据，未计入总分 |`)
+      continue
+    }
+    // 部分判据核实不了时，分数是按能核实的部分归一化出来的，得标出来
+    const note = d.unverifiable > 0 ? `（按可核实的 ${10 - d.unverifiable} 分归一化）` : ''
+    L.push(`| ${d.name} | ${d.score}${note} | \`${pct(d.score)}\` | ${d.gaps[0] || '—'} |`)
   }
   L.push('')
 
@@ -459,7 +616,7 @@ export function reportMarkdown(a, { site = '' } = {}) {
   L.push('每条结论都有实际查到的东西支撑，没有「有待完善」这种没法行动的话。')
   L.push('')
   for (const d of a.dims) {
-    L.push(`### ${d.name} — ${d.score}/10`)
+    L.push(`### ${d.name} — ${d.score == null ? '判不了（未计入总分）' : `${d.score}/10`}`)
     L.push('')
     for (const e of d.evidence) L.push(`- ✅ ${e}`)
     for (const g of d.gaps) L.push(`- ❌ ${g}`)
