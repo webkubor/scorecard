@@ -169,6 +169,24 @@ app.get('/api/scorecard/stats', (c) => {
   })
 })
 
+// 排行榜 —— 每个项目取最新一次质检，按分数排。
+//
+// 用窗口函数取「每个 projectId 的最新一行」，而不是 GROUP BY + MAX(ts)：
+// 后者在 sqlite 里取到的其它列不保证来自同一行（非聚合列是随机挑的），
+// 会出现「score 来自这次、stars 来自上次」的错位数据。
+app.get('/api/scorecard/leaderboard', (c) => {
+  const limit = Math.min(Number(c.req.query('limit')) || 20, 100)
+  const rows = db.query(`
+    SELECT projectId, score, band, type, stars, ts FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY projectId ORDER BY ts DESC) AS rn
+      FROM audits
+    ) WHERE rn = 1
+    ORDER BY score DESC, stars DESC
+    LIMIT ?
+  `).all(limit)
+  return c.json({ items: rows })
+})
+
 // 今日热门 —— 近 24h 被查过几次
 app.get('/api/scorecard/trending', (c) => {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()

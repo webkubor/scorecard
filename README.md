@@ -119,6 +119,7 @@ Restart=always
 | `GET /api/scorecard/report.md?repo=owner/name` | 同一份报告的 Markdown 版，写给 AI 助手读 |
 | `GET /api/scorecard/stats` | 累计查询次数与平均分 |
 | `GET /api/scorecard/trending` | 近 24h 热门仓库 Top 10 |
+| `GET /api/scorecard/leaderboard?limit=20` | 参照榜：每个项目取最新一次质检，按分数排 |
 | `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（SVG） |
 | `GET /api/health` | 健康检查 |
 

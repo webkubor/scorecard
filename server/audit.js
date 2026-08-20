@@ -64,6 +64,69 @@ function detectType(files, pkg) {
 const clamp = (n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10))
 
 /**
+ * 各生态的清单文件 → 包名 → registry 查询地址。
+ *
+ * SKILL.md 写的标准是「是否发布到 registry（npm/PyPI/crates/…）」，但引擎原先
+ * 只查 npm：没有 package.json 就直接判「不是 npm 包，也没看到其它 registry 的痕迹」。
+ * 于是 Rust / Go / Python 项目在分发这一维天花板只有 4 分 —— 实测 19 个知名项目
+ * 有 15 个被判「分发薄弱」，其中包括 CPython。那不是事实，是引擎只会看一个生态。
+ */
+const MANIFESTS = [
+  {
+    file: /^package\.json$/i,
+    eco: 'npm',
+    pick: (t) => JSON.parse(t)?.name,
+    url: (n) => `https://registry.npmjs.org/${encodeURIComponent(n)}`
+  },
+  {
+    file: /^Cargo\.toml$/i,
+    eco: 'crates.io',
+    pick: (t) => (t.match(/^\s*name\s*=\s*"([^"]+)"/m) || [])[1],
+    url: (n) => `https://crates.io/api/v1/crates/${encodeURIComponent(n)}`
+  },
+  {
+    file: /^pyproject\.toml$/i,
+    eco: 'PyPI',
+    pick: (t) => (t.match(/^\s*name\s*=\s*"?([A-Za-z0-9._-]+)"?/m) || [])[1],
+    url: (n) => `https://pypi.org/pypi/${encodeURIComponent(n)}/json`
+  },
+  {
+    file: /^setup\.py$/i,
+    eco: 'PyPI',
+    pick: (t) => (t.match(/name\s*=\s*["']([A-Za-z0-9._-]+)["']/) || [])[1],
+    url: (n) => `https://pypi.org/pypi/${encodeURIComponent(n)}/json`
+  },
+  {
+    file: /^composer\.json$/i,
+    eco: 'Packagist',
+    pick: (t) => JSON.parse(t)?.name,
+    url: (n) => `https://repo.packagist.org/packages/${n}.json`
+  },
+  {
+    file: /\.gemspec$/i,
+    eco: 'RubyGems',
+    pick: (t) => (t.match(/\.name\s*=\s*["']([^"']+)["']/) || [])[1],
+    url: (n) => `https://rubygems.org/api/v1/gems/${encodeURIComponent(n)}.json`
+  }
+]
+
+/** README 里的安装命令 —— 「陌生人能不能装上」最直接的证据，且不用多打一次 API */
+const INSTALL_HINTS = [
+  { re: /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\s+[@\w][\w./@-]*/i, how: 'npm 系安装命令' },
+  { re: /\bpip3?\s+install\s+[\w.[\]-]+/i, how: 'pip 安装命令' },
+  { re: /\b(?:uv|pipx)\s+(?:pip\s+)?install\s+[\w.-]+/i, how: 'uv/pipx 安装命令' },
+  { re: /\bcargo\s+(?:add|install)\s+[\w-]+/i, how: 'cargo 安装命令' },
+  { re: /\bgo\s+(?:get|install)\s+[\w./-]+/i, how: 'go install 命令' },
+  { re: /\bbrew\s+(?:install|tap)\s+[\w./-]+/i, how: 'Homebrew 安装命令' },
+  { re: /\bgem\s+install\s+[\w-]+/i, how: 'gem 安装命令' },
+  { re: /\bcomposer\s+require\s+[\w./-]+/i, how: 'composer 安装命令' },
+  { re: /\bdocker\s+(?:pull|run)\s+[\w./:-]+/i, how: 'Docker 镜像' },
+  { re: /\b(?:apt|apt-get|dnf|yum|pacman|apk)\s+(?:install|add|-S)\s+[\w.-]+/i, how: '系统包管理器安装命令' },
+  { re: /\bcurl\s+[^\n|]*\|\s*(?:sh|bash)/i, how: '一行式安装脚本' },
+  { re: /\bnpx\s+[@\w][\w./@-]*/i, how: 'npx 直接运行' }
+]
+
+/**
  * 跑一次完整质检。
  * @param {{owner:string, repo:string, token?:string}} opts
  */
@@ -130,30 +193,72 @@ export async function auditProject({ owner, repo, token }) {
   }
 
   // ② 分发 —— 「好代码没人看」的分水岭
+  //
+  // 三条独立证据，任一条成立都说明「陌生人拿得到」：
+  //   registry 发布(+4) · README 有安装命令(+3) · release 带可下载产物(+2)
+  // 都不看 star —— 用 star 证明分发是循环论证。
   {
     const ev = [], gaps = []
+    const manual = ['awesome-list / marketplace 收录情况', 'HN/Reddit/V2EX/掘金首发帖']
     let score = 0
-    if (pkg?.name && !pkg.private) {
-      const npm = await fetch(`https://registry.npmjs.org/${pkg.name}`).catch(() => null)
-      if (npm?.ok) {
-        const j = await npm.json()
-        const latest = j['dist-tags']?.latest
-        ev.push(`npm 已发布：${pkg.name}@${latest}`)
-        score += 5
-      } else {
-        gaps.push(`package.json 有 name（${pkg.name}）但 npm 上查不到 —— 没发布`)
+
+    // ── registry：按清单文件挑对应生态，不再假设人人都发 npm
+    const m = MANIFESTS.find((x) => files.some((f) => x.file.test(f)))
+    if (m) {
+      const fname = files.find((f) => m.file.test(f))
+      let name = null
+      try {
+        // package.json 已经取过内容，别再打一次
+        const text = m.eco === 'npm' && pkg ? JSON.stringify(pkg) : (await gh(`/repos/${full}/contents/${fname}`, token, { raw: true })).data
+        if (text) name = m.pick(text)
+      } catch { /* 清单文件格式坏不该让整次质检失败 */ }
+
+      if (m.eco === 'npm' && pkg?.private) {
+        ev.push('package.json 标了 private，不走 registry')
+        score += 2
+      } else if (name) {
+        // crates.io / Packagist 不带 UA 会拒
+        const res = await fetch(m.url(name), {
+          headers: { 'User-Agent': 'scorecard-audit (+https://scorecard.webkubor.online)' }
+        }).catch(() => null)
+        if (res?.ok) {
+          ev.push(`${m.eco} 已发布：${name}`)
+          score += 4
+        } else {
+          gaps.push(`${fname} 声明了 ${name}，但 ${m.eco} 上查不到 —— 没发布`)
+        }
       }
-    } else if (pkg?.private) {
-      ev.push('package.json 标了 private，不走 registry')
+    }
+
+    // ── README 安装命令：最贴近「陌生人能不能装上」的证据
+    const hits = INSTALL_HINTS.filter((h) => h.re.test(readme))
+    if (hits.length) {
+      ev.push(`README 给了安装方式：${hits.slice(0, 3).map((h) => h.how).join('、')}`)
       score += 3
     } else {
-      gaps.push('不是 npm 包，也没看到其它 registry 的痕迹')
+      gaps.push('README 里找不到一条可以照抄的安装命令')
     }
-    r.homepage ? (score += 2, ev.push('有 homepage 可导流')) : gaps.push('没有 demo/官网链接')
-    if ((r.topics || []).length >= 6) score += 1
+
+    // ── release 产物：官方下载渠道，公开可读，不需要任何权限
+    const relAssets = releases.ok && Array.isArray(releases.data)
+      ? releases.data.reduce((n, x) => n + (x.assets?.length || 0), 0)
+      : 0
+    if (relAssets > 0) {
+      ev.push(`最近的 release 带 ${relAssets} 个可下载产物`)
+      score += 2
+    }
+
+    if (r.homepage) { score += 1; ev.push('有 homepage 可导流') } else { gaps.push('没有 demo/官网链接') }
+    if ((r.topics || []).length >= 6) score += 0.5
+
+    // 一条证据都没有时才算真的「拿不到」
+    if (!ev.length) {
+      gaps.push('看不到任何分发渠道：registry、安装命令、release 产物都没有')
+      manual.push('是否通过官网/系统包管理器等本引擎看不到的渠道分发')
+    }
+
     dims.push({
-      key: 'distribution', name: '分发', score: clamp(score + 1), evidence: ev, gaps,
-      manual: ['awesome-list / marketplace 收录情况', 'HN/Reddit/V2EX/掘金首发帖'],
+      key: 'distribution', name: '分发', score: clamp(score + 1), evidence: ev, gaps, manual,
     })
   }
 
@@ -264,17 +369,33 @@ export async function auditProject({ owner, repo, token }) {
     else if (r.stargazers_count >= 10) score += 2.5
     else if (r.stargazers_count >= 1) score += 1
 
-    // traffic 需要 push 权限，拿不到就说明拿不到，不猜
+    const manual = ['npm 下载量趋势', '官网埋点']
+
+    // traffic 需要该仓库的 push 权限。作为公共服务，本引擎对别人的仓库永远没有
+    // 这个权限 —— 所以它 401 是「我们看不到」，不是「项目没有度量」。
+    // 原先把它记成 gap 并扣 3 分，等于每个被质检的项目都无谓损失 3 分，
+    // 衡量的是我们的权限而不是项目本身。改为归入 manual，不扣分。
     const traffic = await gh(`/repos/${full}/traffic/views`, token)
     if (traffic.ok) {
       ev.push(`近两周 ${traffic.data.count} 次浏览 / ${traffic.data.uniques} 独立访客`)
-      score += 3
+      score += 2
     } else {
-      gaps.push(`traffic 数据读不到（HTTP ${traffic.status}）—— 需要该仓库的 push 权限 token`)
+      manual.push('近两周 traffic（需仓库 push 权限，公共质检读不到 —— 请自己在 Insights → Traffic 看）')
     }
+
+    // 替代信号：release 产物下载量。公开可读，不需要任何权限，
+    // 而且比 traffic 更能说明「真的有人在用」。
+    const downloads = releases.ok && Array.isArray(releases.data)
+      ? releases.data.reduce((n, x) => n + (x.assets || []).reduce((m, a) => m + (a.download_count || 0), 0), 0)
+      : 0
+    if (downloads > 0) {
+      ev.push(`最近 release 累计下载 ${downloads.toLocaleString('en-US')} 次`)
+      score += downloads >= 1000 ? 2 : 1
+    }
+
     if (r.forks_count > 0) { ev.push(`${r.forks_count} fork`); score += 1 }
     if (r.homepage) { score += 1; ev.push('有 homepage，可挂埋点') }
-    dims.push({ key: 'metrics', name: '度量', score: clamp(score), evidence: ev, gaps, manual: ['npm 下载量趋势', '官网埋点'] })
+    dims.push({ key: 'metrics', name: '度量', score: clamp(score), evidence: ev, gaps, manual })
   }
 
   const score = clamp(dims.reduce((s, d) => s + d.score, 0) / dims.length)

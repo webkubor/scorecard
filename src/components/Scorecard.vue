@@ -39,6 +39,8 @@ const errorMsg = ref('')
 const stats = ref({ total: 0, avg: 0 })
 const trending = ref([])
 
+const leaderboard = ref([])
+
 async function loadStats() {
   try {
     const res = await fetch('/api/scorecard/stats', { cache: 'no-store' })
@@ -50,7 +52,32 @@ async function loadStats() {
     const j = await r.json().catch(() => ({}))
     trending.value = (j.items || []).filter((t) => t.target && t.target.includes('/'))
   } catch {}
+  try {
+    const r = await fetch('/api/scorecard/leaderboard?limit=12', { cache: 'no-store' })
+    const j = await r.json().catch(() => ({}))
+    leaderboard.value = j.items || []
+  } catch {}
 }
+
+// star 数缩写 —— 54218 在榜单里占太宽，挤掉项目名
+function shortStars(n) {
+  if (n == null) return '—'
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'
+  return String(n)
+}
+
+// 八个维度各自在量什么。放在落地页上，是为了让人在输入之前就知道
+// 「这个分数是怎么来的」—— 一个不解释判据的分数，不会有人当真。
+const DIMENSION_GUIDE = [
+  { name: '门面', q: 'description、topics、徽章有没有把「这是什么」说清楚' },
+  { name: '分发', q: '陌生人能不能顺利装上：npm 包、release 产物、安装说明' },
+  { name: '发布工程', q: 'semver tag、CHANGELOG、release 节奏' },
+  { name: '质量护栏', q: 'CI 绿不绿、有没有测试与 lint' },
+  { name: '社区卫生', q: 'CONTRIBUTING、issue 模板、老 issue 有没有人管' },
+  { name: '文档', q: 'README 有没有快速开始、配置参考、故障排查' },
+  { name: '安全', q: 'SECURITY.md、依赖治理、告警处理' },
+  { name: '度量', q: 'star 增速、fork、流量趋势' }
+]
 
 // loading-stage 维度逐项打勾（server 是并发，所以这个是纯装饰动画，按 ~400ms 一档）
 const loadingSteps = ref([
@@ -344,8 +371,60 @@ onMounted(() => {
       <div class="sc-trust">
         <span class="sc-trust-dot" />
         <span>共查过 <b>{{ stats.total || '—' }}</b> 次 · 平均分 <b>{{ stats.avg || '—' }}</b></span>
-        <span class="muted">·  标准与 <a href="https://github.com/webkubor/project-maturity-audit" target="_blank" rel="noopener">project-maturity-audit</a> 同源</span>
+        <span class="muted">·  标准与 <a href="https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit" target="_blank" rel="noopener">project-maturity-audit</a> 同源</span>
       </div>
+
+      <!-- 参照榜 —— 一个孤零零的分数没有意义，得有标尺。
+           放一批人人都认识的项目，让人看到「vite 6.6、我的 4.2」这个差距是具体的。 -->
+      <section v-if="leaderboard.length" class="sc-board">
+        <header class="sc-board-head">
+          <h2 class="sc-board-title">
+            <Icon name="star" :size="14" />
+            <span>知名项目参照榜</span>
+          </h2>
+          <p class="sc-board-sub">同一套八维标准跑出来的分数 —— 点任意一行看它的完整报告</p>
+        </header>
+
+        <ol class="sc-board-list">
+          <li
+            v-for="(p, i) in leaderboard"
+            :key="p.projectId"
+            class="sc-board-row"
+            :class="{ top: i < 3 }"
+          >
+            <button class="sc-board-btn" @click="input = p.projectId; generate()">
+              <span class="sc-rank">{{ i + 1 }}</span>
+              <span class="sc-board-name"><code>{{ p.projectId }}</code></span>
+              <span class="sc-board-bar">
+                <span
+                  class="sc-board-bar-fill"
+                  :style="{ width: (p.score / 10 * 100) + '%', background: bandColor(p.score) }"
+                />
+              </span>
+              <span class="sc-board-score" :style="{ color: bandColor(p.score) }">{{ p.score }}</span>
+              <span class="sc-board-stars">{{ shortStars(p.stars) }}★</span>
+            </button>
+          </li>
+        </ol>
+      </section>
+
+      <!-- 八维说明 —— 不解释判据的分数没人会当真 -->
+      <section class="sc-dims-guide">
+        <h2 class="sc-board-title">
+          <Icon name="check" :size="14" />
+          <span>八个维度分别在量什么</span>
+        </h2>
+        <div class="sc-dims-grid">
+          <div v-for="d in DIMENSION_GUIDE" :key="d.name" class="sc-dim-card">
+            <div class="sc-dim-card-name">{{ d.name }}</div>
+            <div class="sc-dim-card-q">{{ d.q }}</div>
+          </div>
+        </div>
+        <p class="sc-dims-note">
+          每一维只看客观证据 —— API 拿得到、文件在不在、状态码是多少。
+          「10 秒能不能看懂 README」这类主观项判不了，报告里会标出来交给 AI 或人。
+        </p>
+      </section>
 
       <!-- 今日热门 —— 社会证明 -->
       <div v-if="trending.length" class="sc-trending">
@@ -931,5 +1010,151 @@ onMounted(() => {
   background: rgba(124, 148, 173, 0.18);
   padding: 1px 6px;
   border-radius: 999px;
+}
+
+/* ===== 参照榜 ===== */
+.sc-board {
+  margin-top: 34px;
+  text-align: left;
+}
+.sc-board-head {
+  margin-bottom: 12px;
+}
+.sc-board-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sc-board-sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.sc-board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.sc-board-row + .sc-board-row {
+  border-top: 1px solid var(--border-soft);
+}
+.sc-board-btn {
+  display: grid;
+  /* 排名 · 项目名 · 分数条 · 分数 · star —— 分数条吃掉剩余宽度 */
+  grid-template-columns: 30px minmax(0, 1fr) minmax(60px, 2fr) 42px 58px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.sc-board-btn:hover {
+  background: rgba(124, 148, 173, 0.08);
+}
+.sc-rank {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+/* 前三名的序号提亮 —— 不用金银铜配色，那会跟分数色阶抢注意力 */
+.sc-board-row.top .sc-rank {
+  color: var(--accent);
+}
+.sc-board-name {
+  min-width: 0;
+}
+.sc-board-name code {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.sc-board-bar {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+.sc-board-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+}
+.sc-board-score {
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sc-board-stars {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 八维说明 ===== */
+.sc-dims-guide {
+  margin-top: 34px;
+  text-align: left;
+}
+.sc-dims-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.sc-dim-card {
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.sc-dim-card-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+.sc-dim-card-q {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.sc-dims-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+@media (max-width: 560px) {
+  /* 窄屏把分数条去掉：项目名和分数是必需信息，条只是辅助 */
+  .sc-board-btn {
+    grid-template-columns: 26px minmax(0, 1fr) 40px 52px;
+  }
+  .sc-board-bar {
+    display: none;
+  }
 }
 </style>
