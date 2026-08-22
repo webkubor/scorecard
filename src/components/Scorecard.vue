@@ -859,6 +859,24 @@ onMounted(() => {
   position: relative;
   overflow: hidden;
 }
+@media (min-width: 700px) {
+  .sc-card {
+    display: grid;
+    grid-template-columns: minmax(210px, .65fr) minmax(0, 1.35fr);
+    column-gap: 28px;
+    align-items: center;
+  }
+  .sc-card-head,
+  .sc-card-foot {
+    grid-column: 1 / -1;
+  }
+  .sc-card-head { margin-bottom: 10px; }
+  .sc-card-hero { margin: 0; }
+  .sc-radar-wrap { display: none; }
+  .sc-dims { margin: 0; }
+  .sc-dim-row { grid-template-columns: 76px 1fr 30px; }
+  .sc-card-foot { margin-top: 18px; }
+}
 .sc-card::before {
   content: '';
   position: absolute;
