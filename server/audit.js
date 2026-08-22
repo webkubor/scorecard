@@ -151,7 +151,8 @@ const INSTALL_HINTS = [
   { re: /\bdocker\s+(?:pull|run)\s+[\w./:-]+/i, how: 'Docker 镜像' },
   { re: /\b(?:apt|apt-get|dnf|yum|pacman|apk)\s+(?:install|add|-S)\s+[\w.-]+/i, how: '系统包管理器安装命令' },
   { re: /\bcurl\s+[^\n|]*\|\s*(?:sh|bash)/i, how: '一行式安装脚本' },
-  { re: /\bnpx\s+[@\w][\w./@-]*/i, how: 'npx 直接运行' }
+  { re: /\bnpx\s+[@\w][\w./@-]*/i, how: 'npx 直接运行' },
+  { re: /\bdsh\s+plugin(?:\s+--profile\s+[\w-]+)?\s+add\s+[@\w][\w./@-]*/i, how: 'DSH 插件安装命令' }
 ]
 
 /**
@@ -207,12 +208,18 @@ export async function auditProject({ owner, repo, token }) {
     let badges = 0
     let imgs = 0
     if (readme) {
-      badges = (readme.match(/!\[[^\]]*\]\(https:\/\/img\.shields\.io[^)]*\)/g) || []).length
+      // README 的图片有两种同样合法的写法：Markdown `![]()` 与 HTML `<img>`。
+      // 只认前者会把许多精心排版的项目（尤其是居中 banner / badge 表格）误判成
+      // 「没有图片、没有徽章」，让门面分数失真。
+      const markdownBadges = readme.match(/!\[[^\]]*\]\(https:\/\/img\.shields\.io[^)]*\)/g) || []
+      const htmlImages = readme.match(/<img\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>/gi) || []
+      const htmlBadges = htmlImages.filter((tag) => /\bsrc\s*=\s*["']https:\/\/img\.shields\.io\//i.test(tag))
+      badges = markdownBadges.length + htmlBadges.length
       if (badges >= 4 && badges <= 6) ev.push(`徽章 ${badges} 个（4-6 为宜）`)
       else if (badges > 6) gaps.push(`徽章 ${badges} 个，超过 6 个反而稀释可信度`)
       else gaps.push(`徽章 ${badges} 个（应 4-6 个：CI/license/版本/下载量）`)
 
-      imgs = (readme.match(/!\[[^\]]*\]\([^)]+\)/g) || []).length
+      imgs = (readme.match(/!\[[^\]]*\]\([^)]+\)/g) || []).length + htmlImages.length
       imgs > 0 ? ev.push(`README 含 ${imgs} 张图`) : gaps.push('README 没有任何图片')
     } else {
       // README 取不到（不存在 / 私有 / API 失败）—— 徽章和配图无从判断
@@ -456,7 +463,7 @@ export async function auditProject({ owner, repo, token }) {
       if (readme.length > 800) { ev.push(`README ${readme.length} 字符`); score += 2 }
       else gaps.push(`README 只有 ${readme.length} 字符，撑不起「这是什么、怎么装、怎么用」`)
       sec('install|安装|部署|上手') ? (score += 2, ev.push('有安装章节')) : gaps.push('README 没有安装章节')
-      sec('usage|quick\\s*start|getting\\s*started|快速开始|快速上手|使用|用法|怎么用') ? (score += 2, ev.push('有快速开始/使用章节')) : gaps.push('README 没有快速开始')
+      sec('usage|quick\\s*start|getting\\s*started|快速(?:开始|上手|安装)|使用|用法|怎么用') ? (score += 2, ev.push('有快速开始/使用章节')) : gaps.push('README 没有快速开始')
       sec('api|配置|config|options|参数|选项|自定义') ? (score += 1.5, ev.push('有 API/配置章节')) : gaps.push('没有 API/配置参考')
       sec('faq|troubleshoot|常见问题|故障|排查|问题') ? (score += 1, ev.push('有 FAQ/故障排查')) : gaps.push('没有 FAQ/故障排查')
     }
