@@ -358,9 +358,14 @@ export async function auditProject({ owner, repo, token }) {
     if (tagUnknown) manual.push(`版本 tag 是否规范（tag 太多，取样判不准）—— 这 ${tagUnknown} 分已从满分中剔除`)
     const runList = runs.ok ? runs.data?.workflow_runs || [] : []
     if (runList.length) {
-      const last = runList[0]
-      if (last.conclusion === 'success') { ev.push(`CI 最近一次 success（${last.name}）`); score += 2 }
-      else { gaps.push(`CI 最近一次是 ${last.conclusion || last.status}（${last.name}）—— 红着的 CI 比没有 CI 更伤`); score += 0.5 }
+      // 刚 push 后的最新 run 通常还在排队或执行；把它当「红 CI」会让活跃项目
+      // 在每次发布窗口被无端扣分。优先评估最近一个已完成 run，运行中的只作中性证据。
+      const latest = runList[0]
+      const completed = runList.find((run) => run.status === 'completed')
+      if (latest.status !== 'completed') ev.push(`CI 正在运行（${latest.name}）`)
+      if (completed?.conclusion === 'success') { ev.push(`CI 最近完成一次 success（${completed.name}）`); score += 2 }
+      else if (completed) { gaps.push(`CI 最近完成一次是 ${completed.conclusion || completed.status}（${completed.name}）—— 红着的 CI 比没有 CI 更伤`); score += 0.5 }
+      else { manual.push('CI 尚无完成记录，等待当前运行结束后再核验') }
     } else {
       // 没有 Actions 记录不等于没有 CI —— 可能跑在 Travis / CircleCI / GitLab CI / Jenkins 上，
       // 那些的运行状态本引擎读不到。根目录有对应配置就判为「看不到」而非「没有」。
