@@ -155,6 +155,10 @@ const INSTALL_HINTS = [
   { re: /\bdsh\s+plugin(?:\s+--profile\s+[\w-]+)?\s+add\s+[@\w][\w./@-]*/i, how: 'DSH 插件安装命令' }
 ]
 
+// Actions 里不全是工程质量信号：自动关闭陈旧讨论、同步标签、定时提醒都可能失败，
+// 但不能因此给项目贴上「红 CI」标签。只让明确承担构建/验证/发布职责的工作流参与判分。
+const ENGINEERING_WORKFLOW = /(?:^|[\s:_/.-])(?:ci|test|tests|build|lint|typecheck|check|verify|publish|release|deploy)(?:$|[\s:_/.-])/i
+
 /**
  * 跑一次完整质检。
  * @param {{owner:string, repo:string, token?:string}} opts
@@ -357,15 +361,20 @@ export async function auditProject({ owner, repo, token }) {
     let unv = tagUnknown
     if (tagUnknown) manual.push(`版本 tag 是否规范（tag 太多，取样判不准）—— 这 ${tagUnknown} 分已从满分中剔除`)
     const runList = runs.ok ? runs.data?.workflow_runs || [] : []
-    if (runList.length) {
+    const engineeringRuns = runList.filter((run) => ENGINEERING_WORKFLOW.test(run.name || ''))
+    if (engineeringRuns.length) {
       // 刚 push 后的最新 run 通常还在排队或执行；把它当「红 CI」会让活跃项目
       // 在每次发布窗口被无端扣分。优先评估最近一个已完成 run，运行中的只作中性证据。
-      const latest = runList[0]
-      const completed = runList.find((run) => run.status === 'completed')
+      const latest = engineeringRuns[0]
+      const completed = engineeringRuns.find((run) => run.status === 'completed')
       if (latest.status !== 'completed') ev.push(`CI 正在运行（${latest.name}）`)
       if (completed?.conclusion === 'success') { ev.push(`CI 最近完成一次 success（${completed.name}）`); score += 2 }
       else if (completed) { gaps.push(`CI 最近完成一次是 ${completed.conclusion || completed.status}（${completed.name}）—— 红着的 CI 比没有 CI 更伤`); score += 0.5 }
       else { manual.push('CI 尚无完成记录，等待当前运行结束后再核验') }
+    } else if (runList.length) {
+      // 有 Actions 记录、但没有可识别的工程工作流时，是我们的判断盲区，不是项目的失败。
+      unv += 2
+      manual.push(`最近 Actions（${runList.map((run) => run.name).filter(Boolean).join('、')}）不属于可识别的构建/验证/发布流程 —— 这 2 分已从满分中剔除`)
     } else {
       // 没有 Actions 记录不等于没有 CI —— 可能跑在 Travis / CircleCI / GitLab CI / Jenkins 上，
       // 那些的运行状态本引擎读不到。根目录有对应配置就判为「看不到」而非「没有」。
