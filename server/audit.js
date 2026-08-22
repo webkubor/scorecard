@@ -56,7 +56,10 @@ async function gh(path, token, { raw = false } = {}) {
 }
 
 /** 项目类型决定某些维度的及格线（skill 里每维都有「类型特有检查」） */
-function detectType(files, pkg) {
+function detectType(files, dirs, pkg, repo, owner) {
+  const identity = `${repo.description || ''} ${(repo.topics || []).join(' ')}`.toLowerCase()
+  if (repo.name.toLowerCase() === owner.toLowerCase() && /github-profile|profile readme/.test(identity)) return 'profile'
+  if (!pkg && dirs.length >= 8 && /image-hosting|image hosting|asset|cdn|图床|素材|静态资源/.test(identity)) return 'asset'
   const has = (n) => files.some((f) => f.toLowerCase() === n.toLowerCase())
   if (has('SKILL.md')) return 'skill'
   if (pkg?.bin) return 'cli'
@@ -64,6 +67,27 @@ function detectType(files, pkg) {
   if (pkg?.main || pkg?.exports) return 'library'
   if (files.some((f) => /^(index\.html|public|src)$/i.test(f))) return 'app'
   return 'other'
+}
+
+/** 不同仓库角色对应的可核实维度；不适用不等于项目欠账。 */
+const INAPPLICABLE_DIMS = {
+  asset: new Set(['distribution', 'release', 'quality', 'community', 'docs']),
+  profile: new Set(['distribution', 'release', 'quality', 'docs'])
+}
+
+function excludeInapplicableDimensions(dims, type) {
+  const excluded = INAPPLICABLE_DIMS[type]
+  if (!excluded) return dims
+  return dims.map((dim) => excluded.has(dim.key)
+    ? {
+        ...dim,
+        score: null,
+        unverifiable: 10,
+        evidence: [],
+        gaps: [],
+        manual: [`${type === 'asset' ? '资产' : 'GitHub Profile'}仓库不按软件交付维度评分，未计入总分`]
+      }
+    : dim)
 }
 
 const clamp = (n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10))
@@ -183,7 +207,9 @@ export async function auditProject({ owner, repo, token }) {
 
   const r = repoRes.data
   const readme = readmeRes.ok ? readmeRes.data : ''
-  const files = (contentsRes.ok && Array.isArray(contentsRes.data) ? contentsRes.data : []).map((f) => f.name)
+  const entries = contentsRes.ok && Array.isArray(contentsRes.data) ? contentsRes.data : []
+  const files = entries.map((f) => f.name)
+  const dirs = entries.filter((f) => f.type === 'dir').map((f) => f.name)
   const hasFile = (re) => files.some((f) => re.test(f))
   const cf = community.ok ? community.data?.files || {} : {}
 
@@ -193,7 +219,7 @@ export async function auditProject({ owner, repo, token }) {
     const p = await gh(`/repos/${full}/contents/package.json`, token, { raw: true })
     if (p.ok) { try { pkg = JSON.parse(p.data) } catch { /* 坏 json 不该让整次质检失败 */ } }
   }
-  const type = detectType(files, pkg)
+  const type = detectType(files, dirs, pkg, r, owner)
 
   const dims = []
 
@@ -547,8 +573,9 @@ export async function auditProject({ owner, repo, token }) {
 
   // 总分只对「有结论」的维度求平均。某一维完全无从核实（score === null）时
   // 把它按 0 分算进平均，等于拿我们的观测盲区去扣项目的分。
-  const scored = dims.filter((d) => d.score != null)
-  const inconclusive = dims.filter((d) => d.score == null).map((d) => d.name)
+  const applicableDims = excludeInapplicableDimensions(dims, type)
+  const scored = applicableDims.filter((d) => d.score != null)
+  const inconclusive = applicableDims.filter((d) => d.score == null).map((d) => d.name)
   const score = scored.length
     ? clamp(scored.reduce((s, d) => s + d.score, 0) / scored.length)
     : null
@@ -556,7 +583,7 @@ export async function auditProject({ owner, repo, token }) {
   if (!scored.length) {
     return {
       error: '八个维度都无从核实（仓库可能是空的，或 README/内容都读不到）',
-      score: null, project: full, dims,
+      score: null, project: full, dims: applicableDims,
     }
   }
 
@@ -569,7 +596,7 @@ export async function auditProject({ owner, repo, token }) {
 
   return {
     project: full, type, score, band: bandOf(score).label,
-    stars: r.stargazers_count, dims, todos,
+    stars: r.stargazers_count, dims: applicableDims, todos,
     // 让前端和报告都能说清「这次有几维没量到」，而不是让人以为八维都算了
     scoredCount: scored.length,
     inconclusiveDims: inconclusive,
