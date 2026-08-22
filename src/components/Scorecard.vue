@@ -224,6 +224,7 @@ const sortedDims = computed(() => {
 })
 const strengths = computed(() => sortedDims.value.filter((d) => d.score != null && d.score >= 8).reverse().slice(0, 2))
 const improvements = computed(() => sortedDims.value.filter((d) => d.score != null && d.score < 6).slice(0, 2))
+const prioritizedTodos = computed(() => report.value?.todos || [])
 
 // ---------- 分享 ----------
 const shareBusy = ref(false)
@@ -602,12 +603,65 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- 结果不能只存在于 Markdown 里。先让人看清要改什么，再决定要不要交给 AI。 -->
+      <section class="sc-findings" aria-labelledby="sc-findings-title">
+        <div class="sc-findings-head">
+          <div>
+            <p class="sc-section-kicker">优先处理</p>
+            <h3 id="sc-findings-title">整改清单</h3>
+          </div>
+          <span class="sc-findings-count">{{ prioritizedTodos.length }} 项</span>
+        </div>
+        <ol v-if="prioritizedTodos.length" class="sc-todo-list">
+          <li v-for="todo in prioritizedTodos" :key="`${todo.dim}-${todo.text}`" class="sc-todo-item">
+            <span class="sc-todo-dim">{{ todo.dim }} · {{ todo.dimScore }}/10</span>
+            <span>{{ todo.text }}</span>
+          </li>
+        </ol>
+        <p v-else class="muted">当前已没有可自动判定的整改项。</p>
+      </section>
+
+      <section class="sc-evidence" aria-labelledby="sc-evidence-title">
+        <div class="sc-findings-head">
+          <div>
+            <p class="sc-section-kicker">核验依据</p>
+            <h3 id="sc-evidence-title">八维明细</h3>
+          </div>
+          <span class="muted">展开查看每项依据</span>
+        </div>
+        <details
+          v-for="d in sortedDims"
+          :key="`evidence-${d.name}`"
+          class="sc-evidence-item"
+          :open="d.score != null && d.score < 6"
+        >
+          <summary>
+            <span>{{ d.name }}</span>
+            <span v-if="d.score != null" class="sc-evidence-score" :style="{ color: bandColor(d.score) }">{{ d.score }}/10</span>
+            <span v-else class="sc-dim-unknown">判不了</span>
+          </summary>
+          <div class="sc-evidence-body">
+            <div v-if="d.evidence?.length" class="sc-evidence-column">
+              <h4>已验证</h4>
+              <ul><li v-for="item in d.evidence" :key="item">{{ item }}</li></ul>
+            </div>
+            <div v-if="d.gaps?.length" class="sc-evidence-column is-gap">
+              <h4>待补</h4>
+              <ul><li v-for="item in d.gaps" :key="item">{{ item }}</li></ul>
+            </div>
+            <div v-if="d.manual?.length" class="sc-evidence-column">
+              <h4>需要人工核验</h4>
+              <ul><li v-for="item in d.manual" :key="item">{{ item }}</li></ul>
+            </div>
+          </div>
+        </details>
+      </section>
+
       <!-- 操作条 -->
       <div class="sc-share">
-        <!-- 主操作是「复制 Markdown」：它是唯一能让别人真的把项目改好的形态 ——
-             粘给 AI 就能照着改，改完再回来测一次分数。 -->
+        <!-- Markdown 是后续交给 AI 的格式，不再承担「把结果展示给人」的职责。 -->
         <button class="btn primary" :disabled="shareBusy" @click="copyMarkdown">
-          <Icon name="copy" :size="13" /> 复制 Markdown（可直接喂给 AI）
+          <Icon name="copy" :size="13" /> 交给 AI 修复（复制 Markdown）
         </button>
         <button class="btn" :disabled="shareBusy" @click="downloadMarkdown">
           <Icon name="download" :size="13" /> 下载 .md
@@ -1006,6 +1060,125 @@ onMounted(() => {
   line-height: 1.6;
 }
 
+/* 人读报告：先给可执行的整改，再提供完整的判据，不要求先复制 Markdown。 */
+.sc-findings,
+.sc-evidence {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+.sc-findings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.sc-section-kicker {
+  margin: 0 0 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+.sc-findings h3,
+.sc-evidence h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+}
+.sc-findings-count {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sc-todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sc-todo-item {
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.sc-todo-dim {
+  color: var(--score-warn);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  padding-top: 2px;
+}
+.sc-evidence {
+  padding-bottom: 10px;
+}
+.sc-evidence-item {
+  border-top: 1px solid var(--border-soft);
+}
+.sc-evidence-item summary {
+  align-items: center;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 600;
+  justify-content: space-between;
+  list-style: none;
+  padding: 12px 0;
+}
+.sc-evidence-item summary::-webkit-details-marker {
+  display: none;
+}
+.sc-evidence-item summary::after {
+  color: var(--text-dim);
+  content: '+';
+  font-size: 17px;
+  font-weight: 400;
+  margin-left: 10px;
+}
+.sc-evidence-item[open] summary::after {
+  content: '−';
+}
+.sc-evidence-score {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+.sc-evidence-body {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0 0 16px;
+}
+.sc-evidence-column {
+  border-left: 2px solid var(--border);
+  min-width: 0;
+  padding-left: 10px;
+}
+.sc-evidence-column.is-gap {
+  border-left-color: var(--score-warn);
+}
+.sc-evidence-column h4 {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin: 0 0 5px;
+}
+.sc-evidence-column ul {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+  padding-left: 16px;
+}
+
 /* 操作条 */
 .sc-share {
   display: flex;
@@ -1216,6 +1389,17 @@ onMounted(() => {
 }
 
 @media (max-width: 560px) {
+  .sc-findings,
+  .sc-evidence {
+    padding: 14px;
+  }
+  .sc-todo-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .sc-evidence-body {
+    grid-template-columns: 1fr;
+  }
   /* 窄屏把分数条去掉：项目名和分数是必需信息，条只是辅助 */
   .sc-board-btn {
     grid-template-columns: 26px minmax(0, 1fr) 40px 52px;
