@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { refreshGuard } from 'vite-plugin-refresh-guard'
 import { readFileSync } from 'node:fs'
 
 // 版本号构建时注入 —— 前端只为拿个版本号发一次请求不划算，
@@ -10,7 +11,7 @@ const BACKEND_PORT = process.env.SCORECARD_PORT || 54445
 const FRONTEND_PORT = process.env.SCORECARD_FRONTEND_PORT || 54446
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), refreshGuard({ changelog: false })],
   define: { __APP_VERSION__: JSON.stringify(VERSION) },
   server: {
     host: true,

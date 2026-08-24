@@ -14,8 +14,17 @@
 import { ref, onMounted } from 'vue'
 import Scorecard from './components/Scorecard.vue'
 import Icon from './components/Icon.vue'
+import { useVersionCheck } from 'vite-plugin-refresh-guard/vue'
+import UpdatePrompt from 'vite-plugin-refresh-guard/vue/UpdatePrompt.vue'
 
 const appVersion = __APP_VERSION__
+
+// 部署了新版本怎么切换：轮询 version.json 检测新版本，toast 提示后自动刷新。
+const { hasUpdate, mode, applyUpdate } = useVersionCheck(__REFRESH_GUARD_VERSION__, {
+  mode: 'toast-auto',
+  interval: 5 * 60 * 1000,
+  checkOnVisible: true,
+})
 
 // repo 名自带一个斜杠（owner/repo），所以要把 report 之后的所有段拼回来。
 // 原仓这里用的是 parts[1]，#/report/webkubor/typora-Bloom-theme 只剩 'webkubor'，
@@ -73,6 +82,7 @@ onMounted(async () => {
         同源 · 免登录 · 公开仓库无需 token
       </span>
     </footer>
+    <UpdatePrompt :visible="hasUpdate" :mode="mode" :changelog-html="'<p>有新版本可用，即将自动刷新。</p>'" @refresh="applyUpdate" />
   </div>
 </template>
 

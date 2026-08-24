@@ -18,6 +18,23 @@
     <meta name="twitter:title" content="Scorecard · 8 维度开源项目质检" />
     <meta name="twitter:description" content="粘 GitHub URL，免费拿 8 维度雷达图 + 可直接喂给 AI 的 Markdown 报告。" />
     <title>Scorecard · 开源项目八维度质检</title>
+    <script>
+      // 部署后 CDN 边缘节点没同步齐，老页面按旧 hash 请求 chunk 会 404/返回 index.html 的
+      // fallback（MIME 是 text/html，浏览器拒绝当模块执行）——vite 会抛 vite:preloadError。
+      // 自动清缓存 + 刷新一次即可自愈，不用等用户手动清缓存或等人工排查。
+      // 用时间戳限流（10 秒内只刷新一次），避免新版本真的有问题时无限重刷。
+      (function () {
+        var KEY = 'scorecard-chunk-reload-ts'
+        window.addEventListener('vite:preloadError', function (event) {
+          event.preventDefault()
+          var now = Date.now()
+          var last = Number(sessionStorage.getItem(KEY) || 0)
+          if (now - last < 10000) return
+          sessionStorage.setItem(KEY, String(now))
+          window.location.reload()
+        })
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
