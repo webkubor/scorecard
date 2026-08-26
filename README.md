@@ -1,5 +1,10 @@
 # Scorecard
 
+[![license](https://img.shields.io/github/license/webkubor/scorecard.svg)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/stargazers)
+[![online status](https://img.shields.io/website-up-down-green-red/https/scorecard.webkubor.online.svg)](https://scorecard.webkubor.online)
+[![issues](https://img.shields.io/github/issues/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/issues)
+
 > 粘一个 GitHub URL，几秒钟拿到八维度质检报告：雷达图、按「影响÷成本」排序的整改清单，
 > 和一份可以直接粘给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
 
