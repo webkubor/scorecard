@@ -1,0 +1,5 @@
+# Scorecard robots.txt
+# 本站内容欢迎所有爬虫（含 AI 爬虫）抓取与引用。
+
+User-agent: *
+Allow: /

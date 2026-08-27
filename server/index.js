@@ -370,6 +370,9 @@ app.get('/api/health', (c) => c.json({ ok: true, hasToken: !!GITHUB_TOKEN, dist:
 if (HAS_DIST) {
   app.use('/assets/*', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }))
   app.use('/favicon.svg', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=3600' } }))
+  // 自己的 robots.txt —— 放行所有爬虫（含 AI 爬虫）。必须在通配 catch-all
+  // 之前注册，否则 SPA fallback 会拿 index.html 顶替。
+  app.use('/robots.txt', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=3600' } }))
   // 自己的 llms.txt —— 第九维「AI 可读性」的判据之一，Scorecard 也要达标。
   // public/llms.txt 会被 Vite 拷进 dist/；必须先于下面通配 catch-all 注册，
   // 否则 SPA fallback 会拿 index.html 顶替，被自己的引擎判成「空壳」。
