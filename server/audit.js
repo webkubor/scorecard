@@ -1,8 +1,8 @@
 /**
- * 开源项目质检引擎 —— 八维度自动扫描。
+ * 开源项目质检引擎 —— 九维度自动扫描。
  *
  * 评分标准不是这里发明的，照搬 project-maturity-audit skill（~/dev/github/agent/）：
- * 八个维度、0-10 分、"陌生人会不会 10 秒内 star 这个项目"的视角。两边必须同一套标准，
+ * 九个维度、0-10 分、"陌生人会不会 10 秒内 star 这个项目"的视角。两边必须同一套标准，
  * 否则面板给 7 分、skill 给 4 分，人就不知道该信谁了。
  *
  * ## 这里只做客观项，主观项留给 skill
@@ -91,6 +91,56 @@ function excludeInapplicableDimensions(dims, type) {
 }
 
 const clamp = (n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10))
+
+/**
+ * 2025 年起各大 AI 服务商陆续公开爬虫 UA，站方在 robots.txt 里用 Disallow
+ * 声明「别把我的内容抓去喂模型」。这里做保守解析：
+ *   · 按 User-agent 分组，组内有非空 Disallow 即视为屏蔽该 UA；
+ *   · 没有单列规则时按 `*` 组算（站点常用它一刀切屏蔽所有 AI 爬虫）；
+ *   · 返回被屏蔽的爬虫名列表，空数组 = 全部放行。
+ * 不做 Allow 覆盖等精细语义 —— 那是浏览器该干的事，这里只需要一个方向正确的信号。
+ */
+const AI_CRAWLER_UAS = [
+  'gptbot', 'claudebot', 'claude-web', 'perplexitybot', 'google-extended', 'ccbot'
+]
+
+function robotsBlocksAiBots(text) {
+  const groups = new Map()
+  let current = null
+  for (const raw of String(text).split(/\r?\n/)) {
+    const m = raw.match(/^\s*(user-agent|disallow|allow)\s*:\s*(.*?)\s*$/i)
+    if (!m) continue
+    const [, key, val] = m
+    const k = key.toLowerCase()
+    if (k === 'user-agent') {
+      current = val.toLowerCase()
+      if (!groups.has(current)) groups.set(current, [])
+    } else if (current) {
+      groups.get(current).push(`${k}:${val.trim()}`)
+    }
+  }
+  return AI_CRAWLER_UAS.filter((bot) => {
+    const rules = groups.get(bot) || groups.get('*') || []
+    return rules.some((r) => r.startsWith('disallow:') && r.slice('disallow:'.length).trim() !== '')
+  })
+}
+
+/** SPA 的 history fallback 会对任何路径都返回 index.html（HTTP 200）。
+ * 那不算「有 robots.txt / llms.txt」，只是壳。真 HTML 页从开头就是
+ * `<!DOCTYPE html>` / `<html>`；robots.txt 等纯文本以注释或规则开头。
+ * 只查前 200 字符 —— Cloudflare 托管 robots.txt 结尾会内嵌一段 HTML，
+ * 全文件扫描会把真 robots.txt 误判成 SPA 壳。 */
+function looksLikeHtml(text) {
+  return /<!doctype\s+html|<html[\s>]/i.test(String(text).slice(0, 200))
+}
+
+/** llms.txt 是纯文本清单，规范要求首个标题行是 `# 项目名`。
+ * 长度 >50 且非 HTML 且带 markdown 标题才认。 */
+function isRealLlmsTxt(text) {
+  if (looksLikeHtml(text)) return false
+  const t = String(text).trim()
+  return t.length > 50 && /^#{1,3}\s+\S/m.test(t)
+}
 
 /**
  * 维度评分收口 —— 「查不到」的判据不算项目的错。
@@ -507,7 +557,9 @@ export async function auditProject({ owner, repo, token }) {
       sec('api|配置|config|options|参数|选项|自定义') ? (score += 1.5, ev.push('有 API/配置章节')) : gaps.push('没有 API/配置参考')
       sec('faq|troubleshoot|常见问题|故障|排查|问题') ? (score += 1, ev.push('有 FAQ/故障排查')) : gaps.push('没有 FAQ/故障排查')
     }
-    if (hasFile(/^(AGENTS?\.md|SKILL\.md|llms\.txt)$/i)) { score += 0.5; ev.push('有 agent 可读文档（加分项）') }
+    // AGENTS.md / llms.txt 归入 ⑨ AI 可读性单独打分，这里只留 SKILL.md，
+    // 否则同一个文件在文档维和 AI 维被算两次分。
+    if (hasFile(/^SKILL\.md$/i)) { score += 0.5; ev.push('有 SKILL.md（agent 可读文档，加分项）') }
     dims.push({
       key: 'docs', name: '文档', score: normalizeDim(score, unv), unverifiable: unv,
       evidence: ev, gaps, manual,
@@ -571,6 +623,107 @@ export async function auditProject({ owner, repo, token }) {
     })
   }
 
+  // ⑨ AI 可读性 —— AI 爬虫 / 编码助手能不能读懂这个项目
+  //
+  // 2025 年起 GitHub 原生支持 AGENTS.md，Copilot / Codex / Claude Code 进仓库
+  // 第一件事就是读它；llmstxt.org 的 llms.txt 是给 LLM 的内容清单；官网的
+  // robots.txt 决定 GPTBot / ClaudeBot / PerplexityBot 等能不能引用站内内容。
+  // 判据全是「文件在不在、状态码是多少」，正好是引擎的活。
+  {
+    const ev = [], gaps = []
+    let score = 0
+    let unv = 0
+    const manual = []
+
+    // ── 仓库级：AI 协作规范 + LLM 内容清单
+    if (hasFile(/^AGENTS?\.md$/i)) { score += 3; ev.push('有 AGENTS.md —— Copilot / Codex / Claude Code 进仓库会先读它') }
+    else gaps.push('没有 AGENTS.md —— AI 助手没有仓库级行为准则（GitHub 2025 起原生支持）')
+
+    if (hasFile(/^llms(?:-full)?\.txt$/i)) { score += 2; ev.push('有 llms.txt —— LLM 内容清单') }
+    else gaps.push('没有 llms.txt —— LLM 只能自己翻文件猜重点')
+
+    // ── 官网级：robots.txt 放不放 AI 爬虫、有没有 llms.txt
+    // homepage 不是 http(s) URL 或压根没配，按「查不到」剔除，不算项目的错。
+    let origin = null
+    if (r.homepage) {
+      try {
+        const u = new URL(r.homepage)
+        if (/^https?:$/.test(u.protocol)) origin = u.origin
+      } catch { /* 非 URL 的 homepage */ }
+    }
+    if (!origin) {
+      unv += 3.5
+      manual.push('没有可用的官网（http(s) homepage）—— robots.txt / llms.txt 判不了，这 3.5 分已从满分中剔除')
+    }
+
+    // 三个独立请求并发：GitHub 的 copilot 指令 + 官网的 robots.txt / llms.txt
+    const [cop, robots, llms] = await Promise.allSettled([
+      gh(`/repos/${full}/contents/.github/copilot-instructions.md`, token, { raw: true }),
+      origin ? fetch(`${origin}/robots.txt`, {
+        headers: { 'User-Agent': 'scorecard-audit (+https://scorecard.webkubor.online)' },
+        signal: AbortSignal.timeout(8000)
+      }) : Promise.resolve(null),
+      origin ? fetch(`${origin}/llms.txt`, {
+        headers: { 'User-Agent': 'scorecard-audit (+https://scorecard.webkubor.online)' },
+        signal: AbortSignal.timeout(8000)
+      }) : Promise.resolve(null),
+    ])
+
+    if (cop.status === 'fulfilled' && cop.value?.ok) {
+      score += 1.5
+      ev.push('有 Copilot 定制指令（.github/copilot-instructions.md）')
+    } else {
+      gaps.push('没有 Copilot 定制指令（.github/copilot-instructions.md）')
+    }
+
+    if (origin) {
+      const robotsRes = robots.status === 'fulfilled' ? robots.value : null
+      if (robotsRes) {
+        if (robotsRes.ok) {
+          const text = await robotsRes.text()
+          if (looksLikeHtml(text)) {
+            // 拿到的是 SPA fallback 的 HTML 而不是 robots.txt —— 按「没有」算
+            score += 2
+            ev.push('官网没有 robots.txt（SPA 返回了 HTML）—— AI 爬虫默认放行')
+          } else {
+            const blocked = robotsBlocksAiBots(text)
+            if (blocked.length) {
+              gaps.push(`官网 robots.txt 屏蔽了 AI 爬虫：${blocked.join('、')} —— 内容不会被 AI 搜索/编码助手引用`)
+            } else {
+              score += 2
+              ev.push('官网 robots.txt 放行 AI 爬虫（GPTBot / ClaudeBot / PerplexityBot / Google-Extended 等）')
+            }
+          }
+        } else {
+          // 404 = 没有 robots.txt = 默认放行（robots 是 opt-out 协议）
+          score += 2
+          ev.push('官网没有 robots.txt —— AI 爬虫默认放行')
+        }
+      } else {
+        unv += 2
+        manual.push('官网 robots.txt 抓取失败（超时/不可达）—— 这 2 分已从满分中剔除')
+      }
+
+      const llmsRes = llms.status === 'fulfilled' ? llms.value : null
+      if (llmsRes) {
+        if (llmsRes.ok && isRealLlmsTxt(await llmsRes.text())) {
+          score += 1.5
+          ev.push('官网有 llms.txt（LLM 内容清单）')
+        } else {
+          gaps.push('官网没有 llms.txt（或内容是空壳）')
+        }
+      } else {
+        unv += 1.5
+        manual.push('官网 llms.txt 抓取失败 —— 这 1.5 分已从满分中剔除')
+      }
+    }
+
+    dims.push({
+      key: 'ai', name: 'AI 可读性', score: normalizeDim(score, unv), unverifiable: unv,
+      evidence: ev, gaps, manual,
+    })
+  }
+
   // 总分只对「有结论」的维度求平均。某一维完全无从核实（score === null）时
   // 把它按 0 分算进平均，等于拿我们的观测盲区去扣项目的分。
   const applicableDims = excludeInapplicableDimensions(dims, type)
@@ -582,7 +735,7 @@ export async function auditProject({ owner, repo, token }) {
 
   if (!scored.length) {
     return {
-      error: '八个维度都无从核实（仓库可能是空的，或 README/内容都读不到）',
+      error: '九个维度都无从核实（仓库可能是空的，或 README/内容都读不到）',
       score: null, project: full, dims: applicableDims,
     }
   }
@@ -597,7 +750,7 @@ export async function auditProject({ owner, repo, token }) {
   return {
     project: full, type, score, band: bandOf(score).label,
     stars: r.stargazers_count, dims: applicableDims, todos,
-    // 让前端和报告都能说清「这次有几维没量到」，而不是让人以为八维都算了
+    // 让前端和报告都能说清「这次有几维没量到」，而不是让人以为九维都算了
     scoredCount: scored.length,
     inconclusiveDims: inconclusive,
     ts: new Date().toISOString(),
@@ -622,8 +775,8 @@ export function reportMarkdown(a, { site = '' } = {}) {
   L.push(`**${a.score} / 10** — ${a.band}`)
   L.push('')
   L.push(`项目类型 \`${a.type}\` · ${a.stars} star · 生成于 ${dayjs(a.ts).format('YYYY-MM-DD HH:mm')}`)
-  // 说清这个分数是几维算出来的。有维度没量到却不讲，读的人会以为八维都核实过了。
-  if (a.scoredCount != null && a.scoredCount < 8) {
+  // 说清这个分数是几维算出来的。有维度没量到却不讲，读的人会以为九维都核实过了。
+  if (a.scoredCount != null && a.scoredCount < 9) {
     L.push('')
     L.push(`> 本次只有 ${a.scoredCount} 个维度拿到了可核实的证据，总分是这几维的平均。`)
     if (a.inconclusiveDims?.length) {
@@ -631,7 +784,7 @@ export function reportMarkdown(a, { site = '' } = {}) {
     }
   }
   L.push('')
-  L.push('八维度标准来自 [project-maturity-audit](https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit)：')
+  L.push('九维度标准来自 [project-maturity-audit](https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit)：')
   L.push('评的不是「代码好不好」，是「陌生人会不会在 10 秒内 star、安装、信任它」。')
   L.push('')
 

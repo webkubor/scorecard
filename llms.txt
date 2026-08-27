@@ -1,0 +1,17 @@
+# Scorecard
+
+> 开源项目九维度质检工具。粘一个 GitHub URL，几秒钟拿到雷达图、按「影响÷成本」排序的整改清单，和一份可直接喂给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
+
+Key points:
+- 技术栈：Vue 3 + Vite + Hono + bun:sqlite，单 bun 进程部署
+- 引擎在 `server/audit.js`，只做客观判据；主观项交给 `skills/project-maturity-audit/SKILL.md`
+- 九维度：门面 / 分发 / 发布工程 / 质量护栏 / 社区卫生 / 文档 / 安全 / 度量 / AI 可读性
+- 线上版：https://scorecard.webkubor.online
+
+Useful links:
+- [README](README.md)
+- [AGENTS.md](AGENTS.md)
+- [标准与 skill](skills/project-maturity-audit/SKILL.md)
+- [引擎实现](server/audit.js)
+- [前端面板](src/components/Scorecard.vue)
+- [在线使用](https://scorecard.webkubor.online)

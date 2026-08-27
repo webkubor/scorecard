@@ -4,8 +4,8 @@
  *
  * 三种状态在一页内流转：
  *   1) idle：超大输入框 + 几个示例 chip + "已查过 N 次" 信任状
- *   2) loading：进度文案 + 8 个维度逐项打勾（带 staggered 动画）
- *   3) report：大号分数 + SVG 雷达图 + 8 维度条形明细 + Markdown 报告导出
+ *   2) loading：进度文案 + 9 个维度逐项打勾（带 staggered 动画）
+ *   3) report：大号分数 + SVG 雷达图 + 9 维度条形明细 + Markdown 报告导出
  *
  * 设计取舍：
  * - 全程免登录，前端从不接触任何 token
@@ -66,7 +66,7 @@ function shortStars(n) {
   return String(n)
 }
 
-// 八个维度各自在量什么。放在落地页上，是为了让人在输入之前就知道
+// 九个维度各自在量什么。放在落地页上，是为了让人在输入之前就知道
 // 「这个分数是怎么来的」—— 一个不解释判据的分数，不会有人当真。
 const DIMENSION_GUIDE = [
   { name: '门面', q: 'description、topics、徽章有没有把「这是什么」说清楚' },
@@ -76,7 +76,8 @@ const DIMENSION_GUIDE = [
   { name: '社区卫生', q: 'CONTRIBUTING、issue 模板、老 issue 有没有人管' },
   { name: '文档', q: 'README 有没有快速开始、配置参考、故障排查' },
   { name: '安全', q: 'SECURITY.md、依赖治理、告警处理' },
-  { name: '度量', q: 'star 增速、fork、流量趋势' }
+  { name: '度量', q: 'star 增速、fork、流量趋势' },
+  { name: 'AI 可读性', q: 'AI 爬虫与编码助手能否读懂：AGENTS.md / llms.txt / robots.txt 放行' }
 ]
 
 // loading-stage 维度逐项打勾（server 是并发，所以这个是纯装饰动画，按 ~400ms 一档）
@@ -88,6 +89,7 @@ const loadingSteps = ref([
   { name: '社区配置（contributing / CoC）', done: false },
   { name: '安全与依赖治理', done: false },
   { name: 'Star 增速曲线', done: false },
+  { name: 'AI 可读性（AGENTS.md / robots.txt）', done: false },
   { name: '加权汇总', done: false }
 ])
 let loadingTimer = null
@@ -342,10 +344,10 @@ onMounted(() => {
       </div>
       <h1 class="sc-h1">
         你的开源项目<br>
-        <span class="grad">几秒钟</span>就能拿到 8 维度质检报告
+        <span class="grad">几秒钟</span>就能拿到 9 维度质检报告
       </h1>
       <p class="sc-sub">
-        粘一个 GitHub URL —— 八维度雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
+        粘一个 GitHub URL —— 九维度雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
         免登录，公开仓库无 token 也能跑。
       </p>
 
@@ -389,7 +391,7 @@ onMounted(() => {
             <Icon name="star" :size="14" />
             <span>知名项目参照榜</span>
           </h2>
-          <p class="sc-board-sub">同一套八维标准跑出来的分数 —— 点任意一行看它的完整报告</p>
+          <p class="sc-board-sub">同一套九维标准跑出来的分数 —— 点任意一行看它的完整报告</p>
         </header>
 
         <ol class="sc-board-list">
@@ -415,11 +417,11 @@ onMounted(() => {
         </ol>
       </section>
 
-      <!-- 八维说明 —— 不解释判据的分数没人会当真 -->
+      <!-- 九维说明 —— 不解释判据的分数没人会当真 -->
       <section class="sc-dims-guide">
         <h2 class="sc-board-title">
           <Icon name="check" :size="14" />
-          <span>八个维度分别在量什么</span>
+          <span>九个维度分别在量什么</span>
         </h2>
         <div class="sc-dims-grid">
           <div v-for="d in DIMENSION_GUIDE" :key="d.name" class="sc-dim-card">
@@ -503,9 +505,9 @@ onMounted(() => {
               <Icon name="star" :size="13" /> {{ report.stars || 0 }} stars
               · 类型 {{ report.type }}
             </div>
-            <!-- 有维度没量到就得说清楚：否则这个分数看起来像八维都核实过 -->
-            <div v-if="report.scoredCount && report.scoredCount < 8" class="sc-partial-note">
-              按 {{ report.scoredCount }}/8 维平均
+            <!-- 有维度没量到就得说清楚：否则这个分数看起来像九维都核实过 -->
+            <div v-if="report.scoredCount && report.scoredCount < 9" class="sc-partial-note">
+              按 {{ report.scoredCount }}/9 维平均
               <span v-if="report.inconclusiveDims?.length">
                 · {{ report.inconclusiveDims.join('、') }}读不到判据，未计入
               </span>
@@ -515,7 +517,7 @@ onMounted(() => {
 
         <!-- 雷达图（纯 SVG） -->
         <div class="sc-radar-wrap">
-          <svg viewBox="0 0 220 220" class="sc-radar" aria-label="8维度雷达图">
+          <svg viewBox="0 0 220 220" class="sc-radar" aria-label="9维度雷达图">
             <!-- 同心圆刻度 -->
             <circle cx="110" cy="110" r="22" class="sc-radar-grid"/>
             <circle cx="110" cy="110" r="44" class="sc-radar-grid"/>
@@ -625,7 +627,7 @@ onMounted(() => {
         <div class="sc-findings-head">
           <div>
             <p class="sc-section-kicker">核验依据</p>
-            <h3 id="sc-evidence-title">八维明细</h3>
+            <h3 id="sc-evidence-title">九维明细</h3>
           </div>
           <span class="muted">展开查看每项依据</span>
         </div>
@@ -1371,7 +1373,7 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* ===== 八维说明 ===== */
+/* ===== 九维说明 ===== */
 .sc-dims-guide {
   margin-top: 34px;
   text-align: left;

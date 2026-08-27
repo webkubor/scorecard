@@ -5,7 +5,7 @@
 [![online status](https://img.shields.io/website-up-down-green-red/https/scorecard.webkubor.online.svg)](https://scorecard.webkubor.online)
 [![issues](https://img.shields.io/github/issues/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/issues)
 
-> 粘一个 GitHub URL，几秒钟拿到八维度质检报告：雷达图、按「影响÷成本」排序的整改清单，
+> 粘一个 GitHub URL，几秒钟拿到九维度质检报告：雷达图、按「影响÷成本」排序的整改清单，
 > 和一份可以直接粘给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
 
 **线上版**：<https://scorecard.webkubor.online>
@@ -19,7 +19,7 @@
 
 「我这个开源项目，到底差在哪？」
 
-star 数只告诉你结果，不告诉你原因。Scorecard 把项目成熟度拆成八个维度，
+star 数只告诉你结果，不告诉你原因。Scorecard 把项目成熟度拆成九个维度，
 每一维只看**客观证据**——API 拿得到、文件在不在、状态码是多少：
 
 | 维度 | 看什么 |
@@ -32,6 +32,7 @@ star 数只告诉你结果，不告诉你原因。Scorecard 把项目成熟度�
 | 文档 | README 结构、快速开始、示例 |
 | 安全 | 依赖治理、SECURITY.md、告警 |
 | 度量 | star 增速、fork、下载量 |
+| AI 可读性 | AGENTS.md / llms.txt / 官网 robots.txt 是否放行 AI 爬虫 |
 
 输出不是一个分数了事，而是一份**可执行清单**——每条都带证据和「改完预计 +X 分」，
 还能一键复制成可直接交给 AI 的整改 prompt。
@@ -66,7 +67,7 @@ token 只在服务端使用，从不下发给前端。
 
 ## 两种形态：网页引擎 + Claude skill
 
-同一套八维标准，两种交付方式，**互补而不是重复**：
+同一套九维标准，两种交付方式，**互补而不是重复**：
 
 | | 网页引擎（`server/audit.js`） | Claude skill（`skills/project-maturity-audit/`） |
 |---|---|---|

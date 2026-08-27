@@ -1,6 +1,6 @@
 ---
 name: project-maturity-audit
-description: 项目成熟度体检 — 自动识别项目类型（Skills/前端/CLI/后端/库/组件），按类型差异化标准从门面、分发、发布工程、质量护栏、社区卫生、文档、安全、度量八个维度做证据化评估打分，输出记分卡和整改清单。触发词：项目体检、成熟度评估、为什么没 star、开源检查、maturity audit、审查我的项目/仓库、README 标准/规范、UI 标准、门面检查、logo、徽章/badge。项目要推上 GitHub 或发布前建议主动跑一遍。可传仓库路径或 GitHub 仓库名作为参数；不传则审查当前目录。
+description: 项目成熟度体检 — 自动识别项目类型（Skills/前端/CLI/后端/库/组件），按类型差异化标准从门面、分发、发布工程、质量护栏、社区卫生、文档、安全、度量、AI 可读性九个维度做证据化评估打分，输出记分卡和整改清单。触发词：项目体检、成熟度评估、为什么没 star、开源检查、maturity audit、审查我的项目/仓库、README 标准/规范、UI 标准、门面检查、logo、徽章/badge。项目要推上 GitHub 或发布前建议主动跑一遍。可传仓库路径或 GitHub 仓库名作为参数；不传则审查当前目录。
 type: procedure
 category: coding
 platform: shared
@@ -30,7 +30,7 @@ version: 1.0.0
 
 - **对标**：`gh api "search/repositories?q=<品类关键词>&sort=stars"` 找同品类 star 前 3。
 
-### 1. 八维度检查（并行收集证据）
+### 1. 九维度检查（并行收集证据）
 
 #### ① 门面 First Impression（权重高——决定 10 秒去留）
 
@@ -129,7 +129,7 @@ version: 1.0.0
 
 - 安装/快速开始/API 参考/故障排查四件套。
 - 链接全量体检：`curl -s -o /dev/null -w "%{http_code}"` 检查死链。
-- agent 可读文档（AGENT.md/SKILL.md/llms.txt）是加分项。
+- agent 可读文档加分项：SKILL.md（AGENTS.md / llms.txt 归入 ⑨ AI 可读性单独打分，不在此重复计分）。
 
 **类型特有文档：**
 
@@ -150,6 +150,18 @@ version: 1.0.0
 #### ⑧ 度量 Metrics
 
 - 使用数据：下载量、网站埋点、反馈渠道。没有度量 = 无法迭代。
+
+#### ⑨ AI 可读性 AI Readability
+
+**AI 爬虫 / 编码助手能不能读懂这个项目。** 2025 年起 GitHub 原生支持 AGENTS.md，Copilot / Codex / Claude Code 进仓库第一件事就是读它；llmstxt.org 的 llms.txt 是给 LLM 的内容清单；官网 robots.txt 决定 GPTBot / ClaudeBot / PerplexityBot 等 AI 爬虫能不能引用站内内容。
+
+- 仓库根目录有 `AGENTS.md` / `AGENT.md`（AI 协作规范，含构建命令、代码风格、禁止事项）。
+- 仓库根目录有 `llms.txt` / `llms-full.txt`（LLM 内容清单，指向 README、文档、关键文件）。
+- `.github/copilot-instructions.md`（Copilot 定制指令，提升 AI 补全与代码评审质量）。
+- 官网 `robots.txt` 是否屏蔽主流 AI 爬虫：GPTBot / ClaudeBot / Claude-Web / PerplexityBot / Google-Extended / CCBot。`curl -s https://<site>/robots.txt` 检查 Disallow 段；无 robots.txt = 默认放行；有单列屏蔽 = 明确的反信号（可能是刻意选择，需在报告中说明）。
+- 官网根目录有 `llms.txt`（`curl -s https://<site>/llms.txt`，内容非空）。
+
+**主观补充（引擎判不了，skill 要读）：** AGENTS.md 写得是否真的有用（不是空模板）、README 首屏能否让 AI 与人都 10 秒看懂、官网内容是否服务端渲染可被爬虫抓取。
 
 ### 2. 输出报告
 

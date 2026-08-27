@@ -76,7 +76,7 @@ onMounted(async () => {
 
     <footer class="footer">
       <span>
-        八维度标准与
+        九维度标准与
         <a href="https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit"
            target="_blank" rel="noopener">project-maturity-audit</a>
         同源 · 免登录 · 公开仓库无需 token

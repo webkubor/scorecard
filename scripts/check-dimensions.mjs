@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 八维定义一致性 —— 引擎和 skill 必须说同一套话。
+ * 九维定义一致性 —— 引擎和 skill 必须说同一套话。
  *
  * `server/audit.js` 的头部注释自己写了这条风险：
  *   「评分标准不是这里发明的，照搬 project-maturity-audit skill…
@@ -8,7 +8,7 @@
  *
  * 在 2026-08-20 之前，这个风险是**结构性**的：引擎在 gham 仓库、skill 在
  * webkubor/project-maturity-audit 仓库，两份平行的文字，改一边不会惊动另一边。
- * 当天实测两边八个维度还完全对应——但那是运气，不是机制。
+ * 当天实测两边九个维度还完全对应——但那是运气，不是机制。
  *
  * skill 并进本仓库后，这个检查把「运气」换成「机制」：维度名对不上就报错。
  * 引擎是权威（代码跑出来的分数以它为准），skill 跟着它走。
@@ -30,8 +30,8 @@ const skill = readFileSync(join(ROOT, 'skills/project-maturity-audit/SKILL.md'),
 const engine = [...audit.matchAll(/key: '([a-z]+)', name: '([^']+)'/g)]
   .map((m) => ({ key: m[1], name: m[2] }))
 
-if (engine.length !== 8) {
-  console.error(`❌ 从 server/audit.js 只解析出 ${engine.length} 个维度，期望 8 个。`)
+if (engine.length !== 9) {
+  console.error(`❌ 从 server/audit.js 只解析出 ${engine.length} 个维度，期望 9 个。`)
   console.error('   要么维度真的增减了（那就同步改 skill 和这个脚本），要么写法变了导致正则失效。')
   process.exit(1)
 }
@@ -40,7 +40,7 @@ if (engine.length !== 8) {
 // 散文里的名字可以有多种说法，代码里的 key 只有一个
 const missing = engine.filter((d) => !skill.includes(d.name))
 
-console.log('引擎八维：' + engine.map((d) => `${d.name}(${d.key})`).join(' · '))
+console.log('引擎九维：' + engine.map((d) => `${d.name}(${d.key})`).join(' · '))
 
 if (!missing.length) {
   console.log('\n✅ skill 里都能找到对应维度，两边说的是同一套')

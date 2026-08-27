@@ -1,0 +1,16 @@
+# Scorecard
+
+> 开源项目九维度质检。粘一个 GitHub URL，几秒钟拿到雷达图、按「影响÷成本」排序的整改清单，和一份可直接喂给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
+
+Key points:
+- 输入：GitHub 仓库地址（owner/repo），如 https://scorecard.webkubor.online/#/report/vitejs/vite
+- 输出：0-10 总分 + 九维度雷达图 + 整改清单 + 可直接喂给 AI 的 Markdown 报告
+- 九维度：门面 / 分发 / 发布工程 / 质量护栏 / 社区卫生 / 文档 / 安全 / 度量 / AI 可读性
+- 免费使用：https://scorecard.webkubor.online
+- 源码：https://github.com/webkubor/scorecard
+
+Useful links:
+- [在线使用](https://scorecard.webkubor.online)
+- [源码仓库](https://github.com/webkubor/scorecard)
+- [项目说明](https://github.com/webkubor/scorecard/blob/main/README.md)
+- [标准与 skill](https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit)

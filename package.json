@@ -3,7 +3,7 @@
   "private": false,
   "version": "1.0.0",
   "type": "module",
-  "description": "开源项目八维度质检 —— 粘一个 GitHub URL，拿到雷达图、整改清单和一张可分享长图。",
+  "description": "开源项目九维度质检 —— 粘一个 GitHub URL，拿到雷达图、整改清单和一张可分享长图。",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -1,8 +1,8 @@
-// Scorecard 后端 —— 开源项目八维度质检。
+// Scorecard 后端 —— 开源项目九维度质检。
 //
 // Run: bun server/index.js   （先 bun run build 生成 dist/）
 //
-// 这个服务只做一件事：给定 owner/repo，产出八维度报告。没有登录、没有账户、
+// 这个服务只做一件事：给定 owner/repo，产出九维度报告。没有登录、没有账户、
 // 没有 token 库 —— 它从 github-accounts-manager 拆出来正是为了不再背这些。
 // 唯一的凭据是 SCORECARD_GITHUB_TOKEN（只需 public_repo 只读），用来把
 // GitHub API 限额从匿名 60 次/小时/IP 提到 5000 次/小时；不设也能跑。
@@ -257,7 +257,7 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
 
     <!-- CTA -->
     <text x="60" y="570" font-size="22" font-weight="600" fill="#e6edf3">测你的开源项目 → ${escapeXml(SITE_URL)}</text>
-    <text x="60" y="600" font-size="18" fill="#6e7681">8 维度 · 免登录 · Markdown 报告可喂给 AI</text>
+    <text x="60" y="600" font-size="18" fill="#6e7681">9 维度 · 免登录 · Markdown 报告可喂给 AI</text>
   </g>
 </svg>`.trim()
 
@@ -370,6 +370,10 @@ app.get('/api/health', (c) => c.json({ ok: true, hasToken: !!GITHUB_TOKEN, dist:
 if (HAS_DIST) {
   app.use('/assets/*', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }))
   app.use('/favicon.svg', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=3600' } }))
+  // 自己的 llms.txt —— 第九维「AI 可读性」的判据之一，Scorecard 也要达标。
+  // public/llms.txt 会被 Vite 拷进 dist/；必须先于下面通配 catch-all 注册，
+  // 否则 SPA fallback 会拿 index.html 顶替，被自己的引擎判成「空壳」。
+  app.use('/llms.txt', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=3600' } }))
   app.get('*', async (c) => {
     if (c.req.path.startsWith('/api/')) return c.notFound()
     c.header('Cache-Control', 'no-cache, must-revalidate')
