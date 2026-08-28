@@ -120,7 +120,26 @@ function robotsBlocksAiBots(text) {
     }
   }
   return AI_CRAWLER_UAS.filter((bot) => {
-    const rules = groups.get(bot) || groups.get('*') || []
+    /*
+     * 按 robots 协议的真实语义判，两条以前都错了：
+     *
+     * ① **有自己的分组就只看自己的**，不回落到 `*`。
+     *    原来写的是 `groups.get(bot) || groups.get('*')`，只在 bot 完全没出现时
+     *    才回落 —— 但 `||` 对空数组不成立，bot 分组存在却没规则时仍会落到 `*`。
+     *    更常见的写法是「`*` 里 Disallow 某些目录，再给每个 AI bot 单独 Allow: /」，
+     *    那种站会被判成全屏蔽。
+     *
+     * ② **Allow 优先于 Disallow**（同一分组内更具体的规则胜出；
+     *    `Allow: /` 是最宽的放行，直接压过任何 Disallow）。
+     *    原来只看 disallow、完全无视 allow。
+     *
+     * 2026-08-28 实测误判：webkubor.online 的 robots.txt 给 11 个 AI 爬虫
+     * 逐个写了 `Allow: /`，却被报成屏蔽了其中 4 个。
+     */
+    const own = groups.get(bot)
+    const rules = (own && own.length) ? own : (groups.get('*') || [])
+    const allowsAll = rules.some((r) => r.startsWith('allow:') && r.slice('allow:'.length).trim() === '/')
+    if (allowsAll) return false
     return rules.some((r) => r.startsWith('disallow:') && r.slice('disallow:'.length).trim() !== '')
   })
 }
