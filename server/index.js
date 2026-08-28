@@ -112,8 +112,14 @@ app.get('/api/scorecard', async (c) => {
   }
   const [owner, name] = repo.split('/')
 
-  // cache hit：30 分钟内同仓库直接复用
-  const cached = db
+  /*
+   * cache hit：30 分钟内同仓库直接复用。
+   *
+   * fresh=1 跳过缓存 —— 刚推完整改就复测是最常见的用法，
+   * 而 30 分钟缓存会让人拿到整改前的旧分数，误以为改动没生效。
+   */
+  const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+  const cached = fresh ? null : db
     .query(`SELECT * FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`)
     .get(repo)
   if (cached && Date.now() - new Date(cached.ts).getTime() < 30 * 60 * 1000) {
@@ -300,7 +306,8 @@ app.get('/api/scorecard/report.md', async (c) => {
   }
 
   // 复用 audits 缓存；没有就现跑一次，让直接访问这个 URL 也能拿到报告
-  let row = db.query(`SELECT * FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`).get(repo)
+  const freshMd = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+  let row = freshMd ? null : db.query(`SELECT * FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`).get(repo)
   let report
   if (row && Date.now() - new Date(row.ts).getTime() < 30 * 60 * 1000) {
     report = hydrate(row, repo)

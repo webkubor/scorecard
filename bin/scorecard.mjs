@@ -45,6 +45,8 @@ scorecard — 开源项目九维度质检
   --json          输出原始 JSON（agent 解析用）
   --md            输出 Markdown 报告（可直接粘给 AI）
   --min <分数>    低于该分退出码 1，用于 CI / 发布前闸门
+  --fresh         跳过 30 分钟缓存，强制重新审计
+                  （刚推完整改就复测时必须带上，否则拿到的是改动前的分数）
   --api <地址>    自建实例地址，默认 ${DEFAULT_API}
                   （也可用环境变量 SCORECARD_API）
 
@@ -73,7 +75,7 @@ async function main() {
   const api = String(args.api || DEFAULT_API).replace(/\/$/, '')
 
   if (args.md) {
-    const r = await fetch(`${api}/api/scorecard/report.md?repo=${encodeURIComponent(repo)}`, {
+    const r = await fetch(`${api}/api/scorecard/report.md?repo=${encodeURIComponent(repo)}${args.fresh ? '&fresh=1' : ''}`, {
       signal: AbortSignal.timeout(90000),
     })
     const text = await r.text()
@@ -84,7 +86,7 @@ async function main() {
 
   let payload
   try {
-    const r = await fetch(`${api}/api/scorecard?repo=${encodeURIComponent(repo)}`, {
+    const r = await fetch(`${api}/api/scorecard?repo=${encodeURIComponent(repo)}${args.fresh ? '&fresh=1' : ''}`, {
       signal: AbortSignal.timeout(90000),
     })
     payload = await r.json()
