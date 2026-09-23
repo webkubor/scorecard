@@ -5,8 +5,10 @@
 [![online status](https://img.shields.io/website-up-down-green-red/https/scorecard.webkubor.online.svg)](https://scorecard.webkubor.online)
 [![issues](https://img.shields.io/github/issues/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/issues)
 
-> 粘一个 GitHub URL，几秒钟拿到九维度质检报告：雷达图、按「影响÷成本」排序的整改清单，
-> 和一份可以直接粘给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
+> 粘一个 **GitHub URL / npm 包名 / 网页 URL**，几秒钟拿到按目标类型定制的质检报告：
+> 雷达图、按「影响÷成本」排序的整改清单，一份可直接粘给 AI 的 Markdown 报告。
+> 还能**横切对比两个目标**（测试 env ↔ 线上 env、你的包 ↔ 友商），把"差在哪"直接打开看。
+> 免登录，公开仓库无需 token。
 
 **线上版**：<https://scorecard.webkubor.online>
 
@@ -17,25 +19,30 @@
 
 ## 它回答什么问题
 
-「我这个开源项目，到底差在哪？」
+「我这个项目，到底差在哪？」（项目 / 包 / 站点都行）
 
-star 数只告诉你结果，不告诉你原因。Scorecard 把项目成熟度拆成九个维度，
-每一维只看**客观证据**——API 拿得到、文件在不在、状态码是多少：
+star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆三套独立判据，
+每条结论只看**客观证据**——API 拿得到、文件在不在、状态码是多少：
 
-| 维度 | 看什么 |
-|---|---|
-| 门面 | description / topics / homepage 有没有把「这是什么」说清楚 |
-| 分发 | 能不能被装上：npm / release 产物 / 安装说明 |
-| 发布工程 | semver tag、CHANGELOG、release 节奏 |
-| 质量护栏 | CI、测试脚本、lint |
-| 社区卫生 | CONTRIBUTING、CoC、issue 模板、响应速度 |
-| 文档 | README 结构、快速开始、示例 |
-| 安全 | 依赖治理、SECURITY.md、告警 |
-| 度量 | star 增速、fork、下载量 |
-| AI 可读性 | AGENTS.md / llms.txt / 官网 robots.txt 是否放行 AI 爬虫 |
+| 入口 | 引擎 | 维度数 | 主要看什么 |
+|---|---|---:|---|
+| GitHub 仓库 | `server/audit.js` | 9 | description / topics / CI / issue 响应 / llms.txt 等 |
+| npm 包 | `server/audit-npm.js` | 7 | registry 元数据 + 周/月下载 + 文档 + 安全 + AI 可读性 |
+| 任意网页 | `server/audit-page.js` | 9 | 含 **AI 识别**（llms.txt / schema.org）、**爬虫根目录**（robots / sitemap / .well-known / favicon）、**WebMCP 友好性**（mcp.json / ai-plugin / openapi）等 |
+
+三套维度**互不通用**——把 npm 包的"周下载"塞进 GitHub 仓的"star 增速"位会系统性误判，
+所以引擎、判据、报告模板各自独立。
 
 输出不是一个分数了事，而是一份**可执行清单**——每条都带证据和「改完预计 +X 分」，
 还能一键复制成可直接交给 AI 的整改 prompt。
+
+## 对比模式
+
+把两个目标放一起跑，输出维度差分 + 独有 gap 清单——主用例是**测试环境 vs 线上环境**：
+
+- 9 维逐条 Δ，A 独有 / B 独有 gap 分开列
+- 报告里自带 "把 A 补到 B 的水准" 的 AI prompt
+- 分享 URL：`https://scorecard.webkubor.online/?share=<A>&compare=<B>&type=page` —— 直接扔 IM 即可
 
 ## 快速开始
 
@@ -65,9 +72,34 @@ bun run server
 
 token 只在服务端使用，从不下发给前端。
 
-## 两种形态：网页引擎 + Claude skill
+## CLI
 
-同一套九维标准，两种交付方式，**互补而不是重复**：
+```bash
+# 三路审计（type 推断：URL=page，pkg 名=npm，owner/repo=github）
+scorecard webkubor/scorecard                    # GitHub 仓库（9 维）
+scorecard react --type npm                      # npm 包（7 维）
+scorecard https://example.com --type page       # 网页（9 维）
+
+# 同一类两个目标对比
+scorecard --compare-a https://test.example.com \
+          --compare-b https://example.com \
+          --type page
+
+# 报告 Markdown
+scorecard webkubor/scorecard --md > report.md
+
+# CI 闸门
+scorecard react --type npm --min 6
+
+# 跳过 30 分钟缓存
+scorecard webkubor/scorecard --fresh
+```
+
+CLI 把对应 HTTP 端点暴露成 stdout，agent 默认动作就能跑。
+
+## GitHub 维度的 skill 互补
+
+GitHub 仓这一路额外配 Claude skill 版（深度诊断），互补不重复：
 
 | | 网页引擎（`server/audit.js`） | Claude skill（`skills/project-maturity-audit/`） |
 |---|---|---|
@@ -78,14 +110,12 @@ token 只在服务端使用，从不下发给前端。
 引擎没有 LLM，判不了主观项；skill 没有并发和历史库，扫不了一批仓库、也画不出趋势。
 谁都替代不了谁。
 
-两边的维度定义必须对齐，否则「面板给 7 分、skill 给 4 分」，人就不知道该信谁。
-这件事不靠记性：
+GitHub 引擎是权威：改维度必须同步三处 —— `server/audit.js`、`scripts/check-dimensions.mjs`、
+`skills/project-maturity-audit/SKILL.md`，再跑 `bun run check:dimensions`。
 
 ```bash
-npm run check:dimensions   # 维度名对不上就报错
+bun run check:dimensions   # 维度名对不上就报错
 ```
-
-引擎是权威（面板分数由它算出），skill 跟着走。
 
 ## 部署
 
@@ -117,17 +147,23 @@ Restart=always
 
 ## API
 
-全部免登录：
+全部免登录（除 GitHub 维度可加 token 升限）：
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/scorecard?repo=owner/name` | 跑一次质检（30 分钟内同仓库复用缓存） |
-| `GET /api/scorecard/report.md?repo=owner/name` | 同一份报告的 Markdown 版，写给 AI 助手读 |
+| `GET /api/scorecard?repo=owner/name` | GitHub 仓 9 维质检（30 分钟内同 target 复用缓存） |
+| `GET /api/scorecard?type=npm&pkg=react` | npm 包 7 维质检 |
+| `GET /api/scorecard?type=page&url=https://...` | 网页 9 维质检 |
+| `GET /api/scorecard/report.md?type=...&...` | 同一份报告的 Markdown 版，写给 AI 助手读 |
+| `GET /api/scorecard/compare?type=...&a=X&b=Y` | 两路对比，返回两份报告 + 维度 diff |
+| `GET /api/scorecard/compare.md?type=...&a=X&b=Y` | 对比报告的 Markdown 版 |
 | `GET /api/scorecard/stats` | 累计查询次数与平均分 |
 | `GET /api/scorecard/trending` | 近 24h 热门仓库 Top 10 |
 | `GET /api/scorecard/leaderboard?limit=20` | 参照榜：每个项目取最新一次质检，按分数排 |
 | `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（SVG） |
 | `GET /api/health` | 健康检查 |
+
+任何端点加 `fresh=1` 跳过 30 分钟缓存，强制重跑。
 
 ## 技术栈
 
