@@ -51,6 +51,8 @@ function isRealLlmsTxt(text) {
 /** robots.txt 解析 —— 复用 audit.js 的成熟实现，避免重写一份机器人规则导致分歧 */
 import { robotsBlocksAiBots } from './audit.js'
 
+// 单请求超时：8s 在生产到 modelgo 这类站偶发卡住（Cloudflare 边缘节点跨地域延迟），
+// 主页面单独允许 15s，根目录探测保持 8s —— 总并行 13 个，最坏情况 15s 内返回。
 async function fetchMeta(target, { timeout = 8000, followRedirect = true } = {}) {
   const t0 = Date.now()
   try {
@@ -204,7 +206,7 @@ export async function auditPage({ url }) {
   // 一次性并发把所有需要的资源都拉下来。
   // 13 个并发请求，单次失败不应阻塞其它判据 —— 用 Promise.allSettled。
   const fetches = await Promise.allSettled([
-    fetchMeta(startUrl, { timeout: 15000 }),                         // 主页面
+    fetchMeta(startUrl, { timeout: 30000 }),                         // 主页面：单页内容大且要解析 HTML，给 30s
     fetchMeta(`${origin}/robots.txt`),                                // 爬虫根：robots
     fetchMeta(`${origin}/llms.txt`),                                  // AI 识别：llms.txt
     fetchMeta(`${origin}/llms-full.txt`),                             // AI 识别：llms-full.txt
