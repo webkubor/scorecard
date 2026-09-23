@@ -579,4 +579,6 @@ console.log(`[scorecard] data dir: ${DATA_DIR}`)
 console.log(`[scorecard] static: ${HAS_DIST ? DIST_DIR : '(no dist/ — run `bun run build` first)'}`)
 console.log(`[scorecard] github token: ${GITHUB_TOKEN ? 'configured (5000 req/h)' : 'anonymous (60 req/h/IP)'}`)
 
-export default { port: PORT, hostname: HOST, fetch: app.fetch }
+// page 引擎一次要并发拉主页面 + 11 个根目录探测，匿名 API 慢的时候
+// 13 个请求合并起来偶尔会超过 Bun 默认 10s 的 idleTimeout。放到 60s 给宽裕点。
+export default { port: PORT, hostname: HOST, fetch: app.fetch, idleTimeout: 60 }
