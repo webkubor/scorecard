@@ -14,7 +14,10 @@ import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Database } from 'bun:sqlite'
-import { auditProject, reportMarkdown } from './audit.js'
+import { auditProject, reportMarkdown as reportMarkdownGithub } from './audit.js'
+import { auditPackage, reportMarkdown as reportMarkdownNpm } from './audit-npm.js'
+import { auditPage, reportMarkdown as reportMarkdownPage } from './audit-page.js'
+import { compareReports, compareMarkdown } from './compare.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -56,6 +59,20 @@ db.run(`
 `)
 db.run(`CREATE INDEX IF NOT EXISTS idx_audits_project ON audits(projectId, ts DESC)`)
 
+// 列迁移：2026-09 加 npm / page 两种审计入口，老数据全是 github。
+// sqlite 没有 ADD COLUMN IF NOT EXISTS，启动时程序判断一次。
+const auditCols = db.query(`PRAGMA table_info(audits)`).all()
+if (!auditCols.find((col) => col.name === 'targetType')) {
+  db.run(`ALTER TABLE audits ADD COLUMN targetType TEXT DEFAULT 'github'`)
+  db.run(`UPDATE audits SET targetType = 'github' WHERE targetType IS NULL`)
+}
+// meta 列：存放不同 type 各自的额外字段（npm: latestVersion/weeklyDownloads/readmeSource；
+// page: finalUrl/ttfb/httpStatus/contentType）。这样缓存命中时 markdown 报告也不会丢字段。
+if (!auditCols.find((col) => col.name === 'meta')) {
+  db.run(`ALTER TABLE audits ADD COLUMN meta TEXT DEFAULT '{}'`)
+}
+db.run(`CREATE INDEX IF NOT EXISTS idx_audits_type ON audits(targetType, ts DESC)`)
+
 db.run(`
   CREATE TABLE IF NOT EXISTS ops_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,80 +106,156 @@ function logOp({ actor, action, target = '', detail = '', ok = 1 }) {
 // project。从缓存行还原报告时必须补上这个字段，否则下游看到 undefined ——
 // reportMarkdown 的标题就变成「开源项目质检报告 · undefined」。
 // 原仓没暴露这个问题只是因为前端从不读 report.project，它自己有 parsedRepo。
-function hydrate(row, repo) {
+function hydrate(row, key, type = 'github') {
+  let meta = {}
+  try { meta = row.meta ? (typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta) : {} } catch {}
   return {
     ...row,
-    project: row.project || repo,
+    ...meta,
+    project: row.project || key,
+    targetType: row.targetType || type,
     dims: typeof row.dims === 'string' ? JSON.parse(row.dims || '[]') : row.dims || [],
     todos: typeof row.todos === 'string' ? JSON.parse(row.todos || '[]') : row.todos || []
   }
 }
 
+/** 从三路报告里挑出该 type 需要缓存的额外字段 */
+function extractMeta(report, type) {
+  if (!report) return {}
+  if (type === 'npm') return {
+    latestVersion: report.latestVersion,
+    weeklyDownloads: report.weeklyDownloads,
+    deprecated: report.deprecated,
+    readmeSource: report.readmeSource,
+  }
+  if (type === 'page') return {
+    finalUrl: report.finalUrl,
+    ttfb: report.ttfb,
+    httpStatus: report.httpStatus,
+    contentType: report.contentType,
+    finalOrigin: report.finalOrigin,
+    noindex: report.noindex,
+  }
+  return {}
+}
+
 const app = new Hono()
 
 // ---------- Scorecard：单次质检 ----------
+//
+// 三路入口互相独立、各自判据：
+//   ?repo=owner/name              → type=github（保留旧 API）
+//   ?type=npm&pkg=react           → npm 包质检（registry + downloads + 兜底 GitHub README）
+//   ?type=page&url=https://...    → 网页质检（主页面 + 11 个根目录探测并发）
+//
 // 设计要点：
-// 1. 免登录。公开仓库匿名 60 次/小时/IP 已够单次报告；配了 token 则 5000 次/小时
-// 2. 30 分钟内同仓库直接复用上次结果，不重复打 GitHub
-// 3. 每次结果都写进 audits 表，留趋势
-app.get('/api/scorecard', async (c) => {
+// 1. 免登录；只有 GitHub 入口吃 SCORECARD_GITHUB_TOKEN，npm/page 不需要
+// 2. 30 分钟内同 target 直接复用上次结果
+// 3. 每次结果都写进 audits 表，留趋势（targetType 列区分入口）
+function resolveType(c) {
+  const explicit = (c.req.query('type') || '').toString().toLowerCase().trim()
+  if (['github', 'npm', 'page'].includes(explicit)) return explicit
+  // 向后兼容：老 URL 只传 ?repo=
+  if (c.req.query('repo')) return 'github'
+  return null
+}
+
+function resolveTarget(type, c) {
   const repo = (c.req.query('repo') || '').toString().trim()
-  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+  const pkg = (c.req.query('pkg') || '').toString().trim()
+  const url = (c.req.query('url') || c.req.query('target') || '').toString().trim()
+  if (type === 'github') return { key: repo || url, repo, pkg, url }
+  if (type === 'npm') return { key: pkg, repo: '', pkg, url: '' }
+  if (type === 'page') return { key: url, repo: '', pkg: '', url }
+  return { key: '', repo: '', pkg: '', url: '' }
+}
+
+/**
+ * 按 type 跑对应审计引擎，并返回对应的 Markdown 报告函数。
+ * 不共用一个 reportMarkdown —— 三个引擎各自的口径、记分牌、提示词模板都不一样。
+ */
+async function runAudit(type, { owner, repo, pkg, url }) {
+  if (type === 'github') {
+    const [o, n] = (repo || '').split('/')
+    const report = await auditProject({ owner: o, repo: n, token: GITHUB_TOKEN })
+    return { report, md: reportMarkdownGithub }
+  }
+  if (type === 'npm') {
+    const report = await auditPackage({ pkg })
+    return { report, md: reportMarkdownNpm }
+  }
+  if (type === 'page') {
+    const report = await auditPage({ url })
+    return { report, md: reportMarkdownPage }
+  }
+  return { report: null, md: null }
+}
+
+/**
+ * 缓存优先拿一份报告：30 分钟内直接复用，否则现跑并落库。
+ * /api/scorecard 与 /api/scorecard/compare 都走这里，避免两边各维护一份缓存逻辑。
+ */
+async function getOrAudit(type, key, opts) {
+  const { repo, pkg, url, fresh } = opts
+  const cached = fresh ? null : db
+    .query(`SELECT * FROM audits WHERE projectId = ? AND targetType = ? ORDER BY ts DESC LIMIT 1`)
+    .get(key, type)
+  if (cached && Date.now() - new Date(cached.ts).getTime() < 30 * 60 * 1000) {
+    return { report: hydrate(cached, key, type), cached: true }
+  }
+  const { report } = await runAudit(type, { repo, pkg, url })
+  if (report && !report.error && report.score != null) {
+    try {
+      db.run(
+        `INSERT INTO audits (projectId, targetType, ts, score, band, type, stars, dims, todos, meta) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        key, type, report.ts, report.score, report.band, report.type || type, report.stars || 0,
+        JSON.stringify(report.dims || []), JSON.stringify(report.todos || []),
+        JSON.stringify(extractMeta(report, type))
+      )
+    } catch (e) {
+      console.warn('[scorecard] persist failed:', e.message)
+    }
+  }
+  return { report, cached: false }
+}
+
+app.get('/api/scorecard', async (c) => {
+  const type = resolveType(c)
+  if (!type) return c.json({ error: 'type 必填：github | npm | page（github 可省略，靠 ?repo= 推断）' }, 400)
+
+  const { key, repo, pkg, url } = resolveTarget(type, c)
+  if (!key) return c.json({ error: `${type} 入口缺少目标参数` }, 400)
+
+  // type-specific 格式校验
+  if (type === 'github' && !/^[\w.-]+\/[\w.-]+$/.test(key)) {
     return c.json({ error: 'repo must be owner/name' }, 400)
   }
-  const [owner, name] = repo.split('/')
+  if (type === 'npm' && !/^(@[\w.-]+\/)?[\w.-]+$/.test(key)) {
+    return c.json({ error: 'pkg 格式不合法（例：react / @vue/runtime-core）' }, 400)
+  }
+  if (type === 'page' && !/^https?:\/\//i.test(key)) {
+    return c.json({ error: 'url 必须以 http(s):// 开头' }, 400)
+  }
 
   /*
-   * cache hit：30 分钟内同仓库直接复用。
-   *
    * fresh=1 跳过缓存 —— 刚推完整改就复测是最常见的用法，
    * 而 30 分钟缓存会让人拿到整改前的旧分数，误以为改动没生效。
    */
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  const cached = fresh ? null : db
-    .query(`SELECT * FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`)
-    .get(repo)
-  if (cached && Date.now() - new Date(cached.ts).getTime() < 30 * 60 * 1000) {
-    return c.json({
-      cached: true,
-      report: hydrate(cached, repo)
-    })
-  }
-
-  let report
-  try {
-    report = await auditProject({ owner, repo: name, token: GITHUB_TOKEN })
-  } catch (err) {
-    return c.json({ error: `audit failed: ${err.message}` }, 502)
-  }
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, fresh })
+  if (report?.error) return c.json({ error: report.error }, report.error.startsWith('HTTP 4') ? 400 : 502)
   if (!report || report.score == null) {
-    return c.json({ error: report?.error || 'audit returned no score', status: report?.status }, 400)
-  }
-
-  try {
-    db.run(
-      `INSERT INTO audits (projectId, ts, score, band, type, stars, dims, todos) VALUES (?,?,?,?,?,?,?,?)`,
-      repo,
-      report.ts,
-      report.score,
-      report.band,
-      report.type || '',
-      report.stars || 0,
-      JSON.stringify(report.dims || []),
-      JSON.stringify(report.todos || [])
-    )
-  } catch (e) {
-    console.warn('[scorecard] persist failed:', e.message)
+    return c.json({ error: report?.error || 'audit returned no score' }, 400)
   }
 
   logOp({
     actor: c.req.header('x-visitor-id') || 'anonymous',
-    action: 'scorecard.generate',
-    target: repo,
-    detail: `score=${report.score} band=${report.band} token=${GITHUB_TOKEN ? 'yes' : 'no'}`
+    action: `scorecard.generate.${type}`,
+    target: key,
+    detail: `score=${report.score} band=${report.band}`
   })
 
-  return c.json({ cached: false, report })
+  return c.json({ cached, type, report })
 })
 
 // 累计统计 —— 落地页信任状：已查过几次、平均分
@@ -298,43 +391,132 @@ function radarPolygon(score) {
 // 为什么是 Markdown 而不是长图：图片好看但是死的，别人看完还得自己动手翻译成任务。
 // Markdown 能直接粘进 Claude Code / Cursor 让它照着改，改完再回来测一次分数
 // —— 传播链多了一环，而且那一环是真正产生价值的一环。
-// audit.js 的 reportMarkdown() 本来就是照「读者是 AI 助手」写的，前端一直没用上。
+// 三个审计引擎各自的 reportMarkdown() 提示词模板不同（GitHub 改 README / npm 改 package.json / 网页改配置），
+// 这里按 type 路由到对应那个。
 app.get('/api/scorecard/report.md', async (c) => {
-  const repo = (c.req.query('repo') || '').toString().trim()
-  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-    return c.text('repo must be owner/name', 400)
-  }
+  const type = resolveType(c)
+  if (!type) return c.text('type 必填：github | npm | page', 400)
+  const { key, repo, pkg, url } = resolveTarget(type, c)
+  if (!key) return c.text(`${type} 入口缺少目标参数`, 400)
 
-  // 复用 audits 缓存；没有就现跑一次，让直接访问这个 URL 也能拿到报告
-  const freshMd = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  let row = freshMd ? null : db.query(`SELECT * FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`).get(repo)
-  let report
-  if (row && Date.now() - new Date(row.ts).getTime() < 30 * 60 * 1000) {
-    report = hydrate(row, repo)
-  } else {
-    const [owner, name] = repo.split('/')
-    try {
-      report = await auditProject({ owner, repo: name, token: GITHUB_TOKEN })
-    } catch (err) {
-      return c.text(`audit failed: ${err.message}`, 502)
-    }
-    if (!report || report.score == null) return c.text('audit returned no score', 400)
-    try {
-      db.run(
-        `INSERT INTO audits (projectId, ts, score, band, type, stars, dims, todos) VALUES (?,?,?,?,?,?,?,?)`,
-        repo, report.ts, report.score, report.band, report.type || '', report.stars || 0,
-        JSON.stringify(report.dims || []), JSON.stringify(report.todos || [])
-      )
-    } catch {}
-  }
+  if (type === 'github' && !/^[\w.-]+\/[\w.-]+$/.test(key)) return c.text('repo must be owner/name', 400)
+  if (type === 'npm' && !/^(@[\w.-]+\/)?[\w.-]+$/.test(key)) return c.text('pkg 格式不合法', 400)
+  if (type === 'page' && !/^https?:\/\//i.test(key)) return c.text('url 必须以 http(s):// 开头', 400)
 
-  const md = reportMarkdown(report, { site: `https://${SITE_URL}` })
+  const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, fresh })
+  if (report?.error) return c.text(report.error, report.error.startsWith('HTTP 4') ? 400 : 502)
+  if (!report || report.score == null) return c.text('audit returned no score', 400)
+
+  const mdFn = type === 'npm' ? reportMarkdownNpm : type === 'page' ? reportMarkdownPage : reportMarkdownGithub
+  const md = mdFn(report, { site: `https://${SITE_URL}` })
   logOp({
     actor: c.req.header('x-visitor-id') || 'anonymous',
-    action: 'scorecard.share',
-    target: repo,
-    detail: 'markdown'
+    action: `scorecard.share.${type}`,
+    target: key,
+    detail: `markdown${cached ? ' (cached)' : ''}`
   })
+  c.header('Content-Type', 'text/markdown; charset=utf-8')
+  return c.body(md)
+})
+
+// ---------- Scorecard：对比 ----------
+//
+// ?type=page&a=...&b=...   比较两个同 type 目标的质检结果。
+// 主用例：测试 env vs 线上 env 的站点差距。underlying 各自走 30 分钟缓存，
+// 真正的 diff 在运行时算 —— 不写库。
+app.get('/api/scorecard/compare', async (c) => {
+  const type = (c.req.query('type') || '').toString().toLowerCase().trim()
+  const aRaw = (c.req.query('a') || '').toString().trim()
+  const bRaw = (c.req.query('b') || '').toString().trim()
+  if (!['github', 'npm', 'page'].includes(type)) return c.json({ error: 'type 必填：github | npm | page' }, 400)
+  if (!aRaw || !bRaw) return c.json({ error: 'a / b 必填' }, 400)
+  if (aRaw === bRaw) return c.json({ error: 'a 和 b 是同一个目标，没必要比' }, 400)
+
+  const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+
+  // a / b 各自的 type-specific 参数：github 用 repo / npm 用 pkg / page 用 url
+  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : 'url'
+  const optsFor = (raw) => {
+    if (type === 'github') {
+      if (!/^[\w.-]+\/[\w.-]+$/.test(raw)) return { error: `${paramName} 格式应为 owner/name`, report: null }
+      return { repo: raw, pkg: '', url: '' }
+    }
+    if (type === 'npm') {
+      if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(raw)) return { error: `${paramName} 格式不合法`, report: null }
+      return { repo: '', pkg: raw, url: '' }
+    }
+    if (!/^https?:\/\//i.test(raw)) return { error: `${paramName} 必须以 http(s):// 开头`, report: null }
+    return { repo: '', pkg: '', url: raw }
+  }
+
+  const aOpts = optsFor(aRaw)
+  const bOpts = optsFor(bRaw)
+  if (aOpts.error || bOpts.error) return c.json({ error: aOpts.error || bOpts.error }, 400)
+
+  // 并发拿两边（不互相阻塞）
+  const [aRes, bRes] = await Promise.all([
+    getOrAudit(type, aRaw, { ...aOpts, fresh }),
+    getOrAudit(type, bRaw, { ...bOpts, fresh }),
+  ])
+
+  const errors = []
+  if (aRes.report?.error) errors.push({ side: 'a', error: aRes.report.error })
+  if (bRes.report?.error) errors.push({ side: 'b', error: bRes.report.error })
+  if (errors.length) return c.json({ errors }, 502)
+
+  if (!aRes.report || aRes.report.score == null) return c.json({ error: `a 审计失败：${aRes.report?.error || 'no score'}` }, 400)
+  if (!bRes.report || bRes.report.score == null) return c.json({ error: `b 审计失败：${bRes.report?.error || 'no score'}` }, 400)
+
+  const diff = compareReports(aRes.report, bRes.report)
+  if (!diff) return c.json({ error: '两份报告维度集不一致 —— 可能 type 不一致或审计器变更' }, 400)
+
+  logOp({
+    actor: c.req.header('x-visitor-id') || 'anonymous',
+    action: `scorecard.compare.${type}`,
+    target: `${aRaw}|${bRaw}`,
+    detail: `delta=${diff.totalDelta} aOnlyGaps=${diff.summary.aOnlyGaps} bOnlyGaps=${diff.summary.bOnlyGaps}`,
+  })
+
+  return c.json({
+    type,
+    a: aRes.report,
+    b: bRes.report,
+    diff,
+    cached: { a: aRes.cached, b: bRes.cached },
+  })
+})
+
+// 对比的 Markdown 报告 —— 直接喂给 AI 助手的"差距清单"。
+app.get('/api/scorecard/compare.md', async (c) => {
+  const type = (c.req.query('type') || '').toString().toLowerCase().trim()
+  const aRaw = (c.req.query('a') || '').toString().trim()
+  const bRaw = (c.req.query('b') || '').toString().trim()
+  if (!['github', 'npm', 'page'].includes(type)) return c.text('type 必填：github | npm | page', 400)
+  if (!aRaw || !bRaw) return c.text('a / b 必填', 400)
+
+  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : 'url'
+  const optsFor = (raw) => {
+    if (type === 'github') return /^[\w.-]+\/[\w.-]+$/.test(raw) ? { repo: raw, pkg: '', url: '' } : { error: `${paramName} 格式应为 owner/name` }
+    if (type === 'npm') return /^(@[\w.-]+\/)?[\w.-]+$/.test(raw) ? { repo: '', pkg: raw, url: '' } : { error: `${paramName} 格式不合法` }
+    return /^https?:\/\//i.test(raw) ? { repo: '', pkg: '', url: raw } : { error: `${paramName} 必须以 http(s):// 开头` }
+  }
+  const aOpts = optsFor(aRaw)
+  const bOpts = optsFor(bRaw)
+  if (aOpts.error || bOpts.error) return c.text(aOpts.error || bOpts.error, 400)
+
+  const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+  const [aRes, bRes] = await Promise.all([
+    getOrAudit(type, aRaw, { ...aOpts, fresh }),
+    getOrAudit(type, bRaw, { ...bOpts, fresh }),
+  ])
+  if (aRes.report?.error || bRes.report?.error) return c.text(aRes.report?.error || bRes.report?.error, 502)
+  if (!aRes.report || aRes.report.score == null) return c.text('a 审计失败', 400)
+  if (!bRes.report || bRes.report.score == null) return c.text('b 审计失败', 400)
+
+  const diff = compareReports(aRes.report, bRes.report)
+  if (!diff) return c.text('两份报告维度集不一致', 400)
+  const md = compareMarkdown(aRes.report, bRes.report, diff, { site: `https://${SITE_URL}` })
   c.header('Content-Type', 'text/markdown; charset=utf-8')
   return c.body(md)
 })

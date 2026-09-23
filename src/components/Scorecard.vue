@@ -19,7 +19,9 @@ import { ref, computed, watch, onMounted } from 'vue'
 import Icon from './Icon.vue'
 
 const props = defineProps({
-  initialRepo: { type: String, default: '' }
+  initialRepo: { type: String, default: '' },
+  // 分享 URL 自动跑：?share=X&compare=Y&type=Z
+  initialCompare: { type: Object, default: null }
 })
 
 // 品牌字样集中在这里。散成十几处字面量的话，改名必然漏掉几处，
@@ -31,6 +33,7 @@ const SITE_HOST = 'scorecard.webkubor.online'
 
 // ---------- state machine ----------
 const stage = ref('idle') // idle | loading | report | error
+const mode = ref('single') // single | compare —— 顶部 tab 控制
 const input = ref('')
 const parsedRepo = ref('') // owner/name
 const report = ref(null)
@@ -40,6 +43,19 @@ const stats = ref({ total: 0, avg: 0 })
 const trending = ref([])
 
 const leaderboard = ref([])
+
+// ---------- 对比模式 ----------
+const inputA = ref('')
+const inputB = ref('')
+const compareReport = ref(null)
+const compareCached = ref({ a: false, b: false })
+
+function resetCompare() {
+  inputA.value = ''
+  inputB.value = ''
+  compareReport.value = null
+  compareCached.value = { a: false, b: false }
+}
 
 async function loadStats() {
   try {
@@ -111,6 +127,21 @@ const canSubmit = computed(() => {
   return /^[\w.-]+\/[\w.-]+$/.test(r)
 })
 
+// 对比模式：两个目标形态必须一致（同 type）—— 防止用户拿 npm vs github 比
+function inferredCompareType(s) {
+  if (/^https?:\/\//i.test(s)) return 'page'
+  if (/^(@[\w.-]+\/)?[\w.-]+$/.test(s)) return 'npm'
+  if (/^[\w.-]+\/[\w.-]+$/.test(s)) return 'github'
+  return null
+}
+
+const canSubmitCompare = computed(() => {
+  const a = inputA.value.trim(), b = inputB.value.trim()
+  if (!a || !b) return false
+  const ta = inferredCompareType(a), tb = inferredCompareType(b)
+  return ta && tb && ta === tb
+})
+
 // ---------- 进入 loading 动画 ----------
 function startLoadingAnim() {
   loadingSteps.value.forEach((s) => (s.done = false))
@@ -131,6 +162,8 @@ function startLoadingAnim() {
 async function generate() {
   const r = parseRepoInput(input.value)
   if (!/^[\w.-]+\/[\w.-]+$/.test(r)) return
+  // 切回单目标模式时清掉对比模式的残留
+  if (mode.value !== 'single') { mode.value = 'single'; resetCompare() }
   parsedRepo.value = r
   stage.value = 'loading'
   errorMsg.value = ''
@@ -166,6 +199,94 @@ function reset() {
   report.value = null
   input.value = ''
   history.replaceState(null, '', '#/report')
+}
+
+// ---------- 对比模式：真正调用 ----------
+async function generateCompare() {
+  if (!canSubmitCompare.value) return
+  const a = inputA.value.trim()
+  const b = inputB.value.trim()
+  const type = inferredCompareType(a) || inferredCompareType(b)
+  if (!type) { errorMsg.value = '无法识别两个目标的类型'; stage.value = 'error'; return }
+  stage.value = 'loading'
+  errorMsg.value = ''
+  startLoadingAnim()
+
+  try {
+    const res = await fetch(`/api/scorecard/compare?type=${type}&a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`, { cache: 'no-store' })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    compareReport.value = j
+    compareCached.value = j.cached || { a: false, b: false }
+    setTimeout(() => {
+      stage.value = 'report'
+    }, Math.max(0, 1600 - (loadingSteps.value.length * 350)))
+  } catch (err) {
+    errorMsg.value = err.message
+    stage.value = 'error'
+    if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null }
+  }
+}
+
+function exitCompare() {
+  stage.value = 'idle'
+  resetCompare()
+  history.replaceState(null, '', '#/report')
+}
+
+// 对比 Markdown 复制 —— 复用 /api/scorecard/compare.md
+async function copyCompareMarkdown() {
+  if (!compareReport.value) return
+  const { a, b, type } = compareReport.value
+  shareBusy.value = true
+  shareMsg.value = '📝 正在生成对比 Markdown…'
+  try {
+    const res = await fetch(`/api/scorecard/compare.md?type=${type}&a=${encodeURIComponent(a.project)}&b=${encodeURIComponent(b.project)}`, {
+      headers: { 'X-Visitor-Id': getVisitorId() },
+      cache: 'no-store',
+    })
+    if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`)
+    const md = await res.text()
+    await navigator.clipboard.writeText(md)
+    shareMsg.value = '✅ 对比 Markdown 已复制'
+    logShare('compare-copy-markdown')
+  } catch (err) {
+    shareMsg.value = `❌ ${err.message} —— 已在新标签打开`
+    window.open(`/api/scorecard/compare.md?type=${compareReport.value.type}&a=${encodeURIComponent(compareReport.value.a.project)}&b=${encodeURIComponent(compareReport.value.b.project)}`, '_blank')
+  } finally {
+    shareBusy.value = false
+    setTimeout(() => (shareMsg.value = ''), 3200)
+  }
+}
+
+/**
+ * 生成可分享的对比 URL。
+ * 走 ?share=&compare=&type= 而不是 hash，IM 里贴更短、SEO / OG 也更好认。
+ */
+function compareShareUrl() {
+  if (!compareReport.value) return ''
+  const { a, b, type } = compareReport.value
+  // 类型推断与生成时同源 —— 否则生成的链接前端一加载就跑错
+  const inferred = inferredCompareType(a.project) || inferredCompareType(b.project) || type
+  const qs = new URLSearchParams({
+    share: a.project,
+    compare: b.project,
+    ...(inferred ? { type: inferred } : {}),
+  }).toString()
+  return `${window.location.origin}/?${qs}`
+}
+
+async function copyCompareLink() {
+  const url = compareShareUrl()
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    shareMsg.value = '✅ 对比链接已复制 —— 粘贴到 IM 即可分享'
+    logShare('compare-copy-link')
+  } catch {
+    shareMsg.value = '❌ 复制失败 —— 已选中可手动复制'
+  }
+  setTimeout(() => (shareMsg.value = ''), 2200)
 }
 
 // ---------- 雷达图 / 维度条 ----------
@@ -326,9 +447,17 @@ async function downloadMarkdown() {
 // ---------- 初始化 ----------
 onMounted(() => {
   loadStats()
+  // 单目标分享：#/report/<repo>
   if (props.initialRepo && /\/[\w.-]+/.test(props.initialRepo)) {
     input.value = props.initialRepo
     generate()
+  }
+  // 对比分享：?share=X&compare=Y&type=Z —— 直接进对比模式并跑
+  if (props.initialCompare && props.initialCompare.a && props.initialCompare.b) {
+    mode.value = 'compare'
+    inputA.value = props.initialCompare.a
+    inputB.value = props.initialCompare.b
+    generateCompare()
   }
 })
 </script>
@@ -351,14 +480,31 @@ onMounted(() => {
         免登录，公开仓库无 token 也能跑。
       </p>
 
-      <form class="sc-form" @submit.prevent="generate">
+      <!-- 模式 tab：单目标 vs 对比 -->
+      <div class="sc-mode-tabs">
+        <button
+          class="sc-mode-tab"
+          :class="{ active: mode === 'single' }"
+          @click="mode = 'single'; resetCompare()"
+          type="button"
+        >单目标质检</button>
+        <button
+          class="sc-mode-tab"
+          :class="{ active: mode === 'compare' }"
+          @click="mode = 'compare'; input = ''"
+          type="button"
+        >对比</button>
+        <span class="sc-mode-hint" v-if="mode === 'compare'">A vs B，比如测试 env ↔ 线上 env</span>
+      </div>
+
+      <form v-if="mode === 'single'" class="sc-form" @submit.prevent="generate">
         <div class="sc-input-wrap">
           <Icon name="link" :size="16" class="sc-input-icon" />
           <input
             v-model="input"
             class="sc-input"
             type="text"
-            placeholder="github.com/owner/repo  或  owner/repo"
+            placeholder="github.com/owner/repo  ·  npm 包名  ·  https://example.com"
             spellcheck="false"
             autocomplete="off"
             @keydown.enter.prevent="generate"
@@ -366,6 +512,40 @@ onMounted(() => {
           <button class="btn primary sc-go" :disabled="!canSubmit" type="submit">
             <Icon name="search" :size="14" />
             <span>查一下</span>
+          </button>
+        </div>
+      </form>
+
+      <form v-else class="sc-form sc-form-compare" @submit.prevent="generateCompare">
+        <div class="sc-compare-pair">
+          <div class="sc-input-wrap">
+            <span class="sc-side-tag a">A</span>
+            <input
+              v-model="inputA"
+              class="sc-input"
+              type="text"
+              placeholder="测试 env（如 https://staging.example.com）"
+              spellcheck="false"
+              autocomplete="off"
+              @keydown.enter.prevent="generateCompare"
+            />
+          </div>
+          <span class="sc-vs">↔</span>
+          <div class="sc-input-wrap">
+            <span class="sc-side-tag b">B</span>
+            <input
+              v-model="inputB"
+              class="sc-input"
+              type="text"
+              placeholder="线上 env（如 https://example.com）"
+              spellcheck="false"
+              autocomplete="off"
+              @keydown.enter.prevent="generateCompare"
+            />
+          </div>
+          <button class="btn primary sc-go" :disabled="!canSubmitCompare" type="submit">
+            <Icon name="compare" :size="14" />
+            <span>对比</span>
           </button>
         </div>
       </form>
@@ -482,7 +662,107 @@ onMounted(() => {
     </div>
 
     <!-- ========================================================== -->
-    <!--  REPORT: 雷达图 + 维度明细 + Markdown 导出                         -->
+    <!--  REPORT: 对比模式（diff 视图）                                 -->
+    <!-- ========================================================== -->
+    <div v-else-if="stage === 'report' && compareReport && compareReport.diff" class="sc-report sc-report-compare">
+      <div class="sc-card">
+        <div class="sc-card-head">
+          <div class="sc-brand"><Icon name="brand" :size="16" /> {{ BRAND_MARK }}</div>
+          <button class="btn ghost" @click="exitCompare">← 退出对比</button>
+        </div>
+
+        <div class="sc-compare-head">
+          <div class="sc-compare-side a">
+            <div class="sc-side-tag big a">A</div>
+            <div class="sc-compare-project">{{ compareReport.a.project }}</div>
+            <div class="sc-compare-score" :style="{ color: bandColor(compareReport.a.score) }">
+              {{ compareReport.a.score }}<span class="sc-score-unit">/10</span>
+            </div>
+            <div class="sc-compare-band" :style="{ color: bandColor(compareReport.a.score) }">{{ compareReport.a.band }}</div>
+            <div class="muted" v-if="compareCached.a">(缓存)</div>
+          </div>
+          <div class="sc-compare-vs">
+            <div class="sc-compare-delta" :class="{ neg: compareReport.diff.totalDelta < 0 }">
+              Δ = {{ compareReport.diff.totalDelta > 0 ? '+' : '' }}{{ compareReport.diff.totalDelta }}
+            </div>
+            <div class="muted">
+              {{ compareReport.diff.totalDelta > 0 ? 'B 领先' : compareReport.diff.totalDelta < 0 ? 'B 落后' : '持平' }}
+            </div>
+            <div class="muted sc-compare-summary">
+              A 独有 {{ compareReport.diff.summary.aOnlyGaps }} · B 独有 {{ compareReport.diff.summary.bOnlyGaps }}
+            </div>
+          </div>
+          <div class="sc-compare-side b">
+            <div class="sc-side-tag big b">B</div>
+            <div class="sc-compare-project">{{ compareReport.b.project }}</div>
+            <div class="sc-compare-score" :style="{ color: bandColor(compareReport.b.score) }">
+              {{ compareReport.b.score }}<span class="sc-score-unit">/10</span>
+            </div>
+            <div class="sc-compare-band" :style="{ color: bandColor(compareReport.b.score) }">{{ compareReport.b.band }}</div>
+            <div class="muted" v-if="compareCached.b">(缓存)</div>
+          </div>
+        </div>
+
+        <div class="sc-compare-dims">
+          <div class="sc-compare-dim-row" v-for="d in compareReport.diff.dims" :key="d.key">
+            <div class="sc-compare-dim-name">{{ d.name }}</div>
+            <div class="sc-compare-bar a">
+              <span class="sc-compare-bar-fill" :style="{ width: ((d.aScore || 0) * 10) + '%', background: bandColor(d.aScore || 0) }" />
+              <span class="sc-compare-bar-num">{{ d.aScore ?? '—' }}</span>
+            </div>
+            <div class="sc-compare-dim-vs">
+              <span :class="['sc-compare-winner', d.winner]">{{ d.winner === 'a' ? '🅰️' : d.winner === 'b' ? '🅱️' : '🤝' }}</span>
+              <span class="sc-compare-delta-num" :class="{ neg: d.delta < 0 }">{{ d.delta > 0 ? '+' : '' }}{{ d.delta }}</span>
+            </div>
+            <div class="sc-compare-bar b">
+              <span class="sc-compare-bar-num">{{ d.bScore ?? '—' }}</span>
+              <span class="sc-compare-bar-fill" :style="{ width: ((d.bScore || 0) * 10) + '%', background: bandColor(d.bScore || 0) }" />
+            </div>
+          </div>
+        </div>
+
+        <!-- B 独有、A 还没补的（这是 A 该立刻做的） -->
+        <div v-if="compareReport.diff.dims.some(d => d.uniqueGaps?.b?.length)" class="sc-compare-actionable">
+          <h3 class="sc-compare-section-title">A → B 还要补的（补上即追上 B）</h3>
+          <ul class="sc-compare-gap-list">
+            <li v-for="d in compareReport.diff.dims" :key="d.key + '-b'">
+              <template v-for="g in d.uniqueGaps.b" :key="d.key + g">
+                <span class="sc-compare-dim-tag" :style="{ borderColor: bandColor(d.aScore || 0) }">{{ d.name }}</span>
+                <span>{{ g }}</span>
+              </template>
+            </li>
+          </ul>
+        </div>
+
+        <!-- A 独有、B 还没补的 -->
+        <div v-if="compareReport.diff.dims.some(d => d.uniqueGaps?.a?.length)" class="sc-compare-actionable">
+          <h3 class="sc-compare-section-title">B → A 还要补的</h3>
+          <ul class="sc-compare-gap-list">
+            <li v-for="d in compareReport.diff.dims" :key="d.key + '-a'">
+              <template v-for="g in d.uniqueGaps.a" :key="d.key + g">
+                <span class="sc-compare-dim-tag" :style="{ borderColor: bandColor(d.bScore || 0) }">{{ d.name }}</span>
+                <span>{{ g }}</span>
+              </template>
+            </li>
+          </ul>
+        </div>
+
+        <div class="sc-compare-actions">
+          <button class="btn primary" :disabled="shareBusy" @click="copyCompareMarkdown">
+            <Icon name="copy" :size="14" />
+            <span>复制对比 Markdown</span>
+          </button>
+          <button class="btn" @click="copyCompareLink">
+            <Icon name="link" :size="14" />
+            <span>复制对比链接</span>
+          </button>
+          <span class="muted" v-if="shareMsg">{{ shareMsg }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================================== -->
+    <!--  REPORT: 单目标雷达图 + 维度明细 + Markdown 导出                -->
     <!-- ========================================================== -->
     <div v-else-if="stage === 'report' && report" class="sc-report">
       <!-- 报告卡片 -->
@@ -722,6 +1002,211 @@ onMounted(() => {
   line-height: 1.6;
 }
 .sc-form { margin-bottom: 18px; }
+
+/* 模式 tabs（单目标 vs 对比） */
+.sc-mode-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.sc-mode-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sc-mode-tab:hover { color: var(--text); border-color: var(--accent); }
+.sc-mode-tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.sc-mode-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 6px;
+}
+
+.sc-form-compare .sc-compare-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.sc-form-compare .sc-compare-pair .sc-input-wrap { padding-left: 12px; }
+.sc-side-tag {
+  display: inline-block;
+  width: 22px; height: 22px;
+  text-align: center;
+  border-radius: 6px;
+  font-size: 11px; font-weight: 700;
+  line-height: 22px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.sc-side-tag.a { background: rgba(176, 133, 133, 0.16); color: #b08585; }
+.sc-side-tag.b { background: rgba(125, 157, 140, 0.18); color: #7d9d8c; }
+.sc-side-tag.big { width: 36px; height: 36px; line-height: 36px; font-size: 16px; margin-right: 0; margin-bottom: 8px; }
+.sc-vs { color: var(--text-dim); font-size: 16px; padding: 0 4px; }
+
+/* 对比报告视图 */
+.sc-compare-head {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 0 24px;
+}
+.sc-compare-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+}
+.sc-compare-side.a .sc-compare-score { color: #b08585; }
+.sc-compare-side.b .sc-compare-score { color: #7d9d8c; }
+.sc-compare-project {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+.sc-compare-score {
+  font-size: 56px; font-weight: 800;
+  line-height: 1; letter-spacing: -2px;
+}
+.sc-compare-score .sc-score-unit { font-size: 18px; color: var(--text-dim); margin-left: 4px; }
+.sc-compare-band { font-size: 14px; font-weight: 600; }
+.sc-compare-vs {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.sc-compare-delta {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--accent);
+}
+.sc-compare-delta.neg { color: #b08585; }
+.sc-compare-summary { font-size: 12px; }
+
+.sc-compare-dims { margin-top: 16px; }
+.sc-compare-dim-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 70px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.sc-compare-dim-row:first-child { border-top: 0; }
+.sc-compare-dim-name { font-size: 13px; font-weight: 600; }
+.sc-compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  background: var(--bg-elev);
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+.sc-compare-bar.a { justify-content: flex-end; }
+.sc-compare-bar.b { justify-content: flex-start; }
+.sc-compare-bar-fill {
+  height: 100%;
+  display: block;
+  border-radius: 6px;
+  opacity: 0.85;
+}
+.sc-compare-bar.a .sc-compare-bar-fill { border-radius: 6px 0 0 6px; }
+.sc-compare-bar.b .sc-compare-bar-fill { border-radius: 0 6px 6px 0; }
+.sc-compare-bar.a .sc-compare-bar-fill { margin-left: auto; }
+.sc-compare-bar-num {
+  position: absolute;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 8px;
+  color: var(--text);
+  z-index: 1;
+}
+.sc-compare-bar.a .sc-compare-bar-num { left: 8px; }
+.sc-compare-bar.b .sc-compare-bar-num { right: 8px; }
+.sc-compare-dim-vs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+}
+.sc-compare-winner { font-size: 16px; }
+.sc-compare-delta-num {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-weight: 700;
+  color: var(--accent);
+}
+.sc-compare-delta-num.neg { color: #b08585; }
+
+.sc-compare-actionable {
+  margin-top: 20px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+.sc-compare-section-title { margin: 0 0 8px; font-size: 14px; }
+.sc-compare-gap-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sc-compare-gap-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.sc-compare-dim-tag {
+  display: inline-block;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.sc-compare-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .sc-compare-head { grid-template-columns: 1fr; gap: 16px; }
+  .sc-compare-vs { order: 0; }
+  .sc-compare-side.b { order: 2; }
+  .sc-compare-dim-row { grid-template-columns: 1fr; gap: 6px; }
+  .sc-form-compare .sc-compare-pair { grid-template-columns: 1fr; }
+  .sc-vs { display: none; }
+}
+
 .sc-input-wrap {
   display: flex;
   align-items: center;

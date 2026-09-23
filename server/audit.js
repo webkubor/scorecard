@@ -144,6 +144,12 @@ function robotsBlocksAiBots(text) {
   })
 }
 
+/**
+ * 暴露给 page 引擎复用：同一份 robots.txt 语义解读不要在两处重写，免得一边修了一边忘改。
+ * 这函数是纯函数、无副作用 —— import 即用，不需要 await。
+ */
+export { robotsBlocksAiBots }
+
 /** SPA 的 history fallback 会对任何路径都返回 index.html（HTTP 200）。
  * 那不算「有 robots.txt / llms.txt」，只是壳。真 HTML 页从开头就是
  * `<!DOCTYPE html>` / `<html>`；robots.txt 等纯文本以注释或规则开头。
