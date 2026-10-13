@@ -11,11 +11,13 @@
  *   #/                                       → 落地页（空表单）
  *   #/report/<owner>/<repo>                  → 单目标报告页（预填并自动查询）
  *   #/compare?type=&share=&compare=          → 对比页（预填并自动跑）
+ *   #/geo?brand=&domain=&q=&competitors=     → GEO 可见性页（预填品牌与问题）
  * 另一种（更短，分享友好）：?share=X&compare=Y&type=Z 直接挂在根 URL 上，
  * 后端 SPA fallback 都认 —— 同一个效果，IM 里贴得更短。
  */
 import { ref, onMounted } from 'vue'
 import Scorecard from './components/Scorecard.vue'
+import GeoCard from './components/GeoCard.vue'
 import Icon from './components/Icon.vue'
 import { useVersionCheck } from 'vite-plugin-refresh-guard/vue'
 import UpdatePrompt from 'vite-plugin-refresh-guard/vue/UpdatePrompt.vue'
@@ -50,11 +52,18 @@ function parseRoute() {
     return { name: 'compare', compare: { a: shareA, b: shareB, type: shareType || '' }, repo: '' }
   }
 
-  // hash 路由
-  const parts = hash.split('/').filter(Boolean)
+  // hash 路由。
+  // 查询串必须先摘掉再切段：#/geo?brand=x 直接按 '/' 切，第一段拿到的是
+  // 「geo?brand=x」而不是「geo」，于是带参数的分享链接一律落回落地页 ——
+  // 链接能生成、能贴出去、点开是空白，这比不支持分享更糟。
+  const [hashPath, hashQuery = ''] = hash.split('?')
+  const parts = hashPath.split('/').filter(Boolean)
   if (parts[0] === 'report') return { name: 'report', repo: parts.slice(1).join('/'), compare: null }
+  if (parts[0] === 'geo') {
+    return { name: 'geo', repo: '', compare: null, geoQuery: hashQuery }
+  }
   if (parts[0] === 'compare') {
-    const q = new URLSearchParams(hash.split('?')[1] || '')
+    const q = new URLSearchParams(hashQuery)
     return {
       name: 'compare',
       compare: {
@@ -103,8 +112,13 @@ onMounted(async () => {
     </header>
 
     <main class="main">
+      <!-- GEO 是独立组件，不塞进 Scorecard：那一支假设「一个输入框决定一种 type」，
+           而 GEO 要品牌名 + 域名 + 问题清单 + 竞品四个字段，判据完全不同。
+           geoQuery 进 key 是为了让分享链接切换品牌时组件重建。 -->
+      <GeoCard v-if="route.name === 'geo'" :key="'geo' + (route.geoQuery || '')" />
       <!-- key 让落地页与报告页 / 对比页切换时组件重建，避免上一次的 stage 残留 -->
       <Scorecard
+        v-else
         :key="route.name + (route.repo || '') + (route.compare?.a || '') + (route.compare?.b || '')"
         :initial-repo="route.repo"
         :initial-compare="route.compare"
@@ -112,7 +126,12 @@ onMounted(async () => {
     </main>
 
     <footer class="footer">
-      <span>
+      <!-- GEO 页不能说「九维度同源」：它只有 4 个维度，标准也不一样。
+           挂一句无关的 provenance 在脚下，比不写更糟 —— 会被当成背书。 -->
+      <span v-if="route.name === 'geo'">
+        GEO 四维度 · 提及 / 引用 / 份额 / 倾向 · 免登录 · 线上实例不配 key，只读历史，零花费
+      </span>
+      <span v-else>
         九维度标准与
         <a href="https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit"
            target="_blank" rel="noopener">project-maturity-audit</a>

@@ -480,6 +480,16 @@ onMounted(() => {
         免登录，公开仓库无 token 也能跑。
       </p>
 
+      <!-- GEO 入口：独立路由，不占上面的单/对比两个 tab —— 它的表单形态完全不同 -->
+      <button class="sc-geo-entry" type="button" @click="location.hash = '#/geo'">
+        <Icon name="eye" :size="15" />
+        <span class="sc-geo-entry-main">
+          <strong>测品牌的 AI 可见性</strong>
+          <em>GEO · 别人问 ChatGPT「XX 类产品有哪些」时，你在不在答案里</em>
+        </span>
+        <Icon name="arrow-right" :size="15" />
+      </button>
+
       <!-- 模式 tab：单目标 vs 对比 -->
       <div class="sc-mode-tabs">
         <button
@@ -1011,6 +1021,19 @@ onMounted(() => {
   margin-bottom: 14px;
   flex-wrap: wrap;
 }
+/* GEO 入口 —— 独立成条而不是塞进上面的 tab 胶囊：它是另一个问题域，
+   表单完全不同（品牌/域名/问题清单/竞品），混进同一组 tab 会让人以为是
+   「单目标质检」的第四种输入格式。 */
+.sc-geo-entry {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 11px 14px; margin-bottom: 16px;
+  cursor: pointer; text-align: left; transition: all 0.15s;
+}
+.sc-geo-entry:hover { border-color: var(--accent); background: var(--bg-elev-2); }
+.sc-geo-entry-main { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.sc-geo-entry-main strong { font-size: 13.5px; color: var(--text); font-weight: 500; }
+.sc-geo-entry-main em { font-style: normal; font-size: 11.5px; color: var(--text-dim); }
 .sc-mode-tab {
   background: transparent;
   border: 1px solid var(--border);

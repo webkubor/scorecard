@@ -17,6 +17,7 @@ import { Database } from 'bun:sqlite'
 import { auditProject, reportMarkdown as reportMarkdownGithub } from './audit.js'
 import { auditPackage, reportMarkdown as reportMarkdownNpm } from './audit-npm.js'
 import { auditPage, reportMarkdown as reportMarkdownPage } from './audit-page.js'
+import { auditGeo, reportMarkdown as reportMarkdownGeo, geoProviderStatus, hydrateGeo, resolveGeoProvider } from './audit-geo.js'
 import { compareReports, compareMarkdown } from './compare.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -107,6 +108,9 @@ function logOp({ actor, action, target = '', detail = '', ok = 1 }) {
 // reportMarkdown 的标题就变成「开源项目质检报告 · undefined」。
 // 原仓没暴露这个问题只是因为前端从不读 report.project，它自己有 parsedRepo。
 function hydrate(row, key, type = 'github') {
+  // GEO 有自己的还原函数：它的 band/bandHint 不在数据库列里（band 列只有 label），
+  // 而 markdown 报告要 bandHint 才能出提示语。走通用 hydrate 会让 GEO 报告少一句。
+  if (type === 'geo') return hydrateGeo(row, key)
   let meta = {}
   try { meta = row.meta ? (typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta) : {} } catch {}
   return {
@@ -136,6 +140,17 @@ function extractMeta(report, type) {
     finalOrigin: report.finalOrigin,
     noindex: report.noindex,
   }
+  // GEO 的问题清单/竞品/离线标记必须跟着历史一起存：趋势页面只读历史，
+  // 没有这三样就画不出「你这周问的还是那几道题吗」。
+  if (type === 'geo') return {
+    domain: report.domain,
+    provider: report.provider,
+    offline: report.offline,
+    questions: report.questions,
+    competitors: report.competitors,
+    inconclusiveDims: report.inconclusiveDims,
+    failures: report.failures,
+  }
   return {}
 }
 
@@ -154,7 +169,7 @@ const app = new Hono()
 // 3. 每次结果都写进 audits 表，留趋势（targetType 列区分入口）
 function resolveType(c) {
   const explicit = (c.req.query('type') || '').toString().toLowerCase().trim()
-  if (['github', 'npm', 'page'].includes(explicit)) return explicit
+  if (['github', 'npm', 'page', 'geo'].includes(explicit)) return explicit
   // 向后兼容：老 URL 只传 ?repo=
   if (c.req.query('repo')) return 'github'
   return null
@@ -167,6 +182,24 @@ function resolveTarget(type, c) {
   if (type === 'github') return { key: repo || url, repo, pkg, url }
   if (type === 'npm') return { key: pkg, repo: '', pkg, url: '' }
   if (type === 'page') return { key: url, repo: '', pkg: '', url }
+  // GEO 的 target 是品牌名。问题清单与竞品走逗号分隔 —— 不另开 body 参数是因为
+  // 这个入口要能用 GET 直接分享/预览，跟前三路保持同一种打开方式。
+  if (type === 'geo') {
+    const brand = (c.req.query('brand') || c.req.query('target') || url || '').toString().trim()
+    const split = (raw) => raw.toString().split(',').map((s) => s.trim()).filter(Boolean)
+    return {
+      key: brand,
+      repo: '', pkg: '', url: '',
+      brand,
+      domain: (c.req.query('domain') || '').toString().trim(),
+      questions: split(c.req.query('q') || ''),
+      competitors: split(c.req.query('competitors') || ''),
+      // 空 / auto 不留空串下去：auditGeo 的形参默认值只在 undefined 时生效，
+      // 传 '' 会直接撞上「未知 provider：」—— 调用方说「自动」，返回的却是一个报错。
+      // 就当「自动」在这里解开：有就绪的就用，一个都没有落到 offline。
+      provider: resolveGeoProvider((c.req.query('provider') || '').toString().trim()),
+    }
+  }
   return { key: '', repo: '', pkg: '', url: '' }
 }
 
@@ -174,7 +207,7 @@ function resolveTarget(type, c) {
  * 按 type 跑对应审计引擎，并返回对应的 Markdown 报告函数。
  * 不共用一个 reportMarkdown —— 三个引擎各自的口径、记分牌、提示词模板都不一样。
  */
-async function runAudit(type, { owner, repo, pkg, url }) {
+async function runAudit(type, { owner, repo, pkg, url, brand, domain, questions, competitors, provider }) {
   if (type === 'github') {
     const [o, n] = (repo || '').split('/')
     const report = await auditProject({ owner: o, repo: n, token: GITHUB_TOKEN })
@@ -188,6 +221,10 @@ async function runAudit(type, { owner, repo, pkg, url }) {
     const report = await auditPage({ url })
     return { report, md: reportMarkdownPage }
   }
+  if (type === 'geo') {
+    const report = await auditGeo({ brand, domain, questions, competitors, provider })
+    return { report, md: reportMarkdownGeo }
+  }
   return { report: null, md: null }
 }
 
@@ -196,14 +233,22 @@ async function runAudit(type, { owner, repo, pkg, url }) {
  * /api/scorecard 与 /api/scorecard/compare 都走这里，避免两边各维护一份缓存逻辑。
  */
 async function getOrAudit(type, key, opts) {
-  const { repo, pkg, url, fresh } = opts
-  const cached = fresh ? null : db
-    .query(`SELECT * FROM audits WHERE projectId = ? AND targetType = ? ORDER BY ts DESC LIMIT 1`)
-    .get(key, type)
-  if (cached && Date.now() - new Date(cached.ts).getTime() < 30 * 60 * 1000) {
-    return { report: hydrate(cached, key, type), cached: true }
+  const { repo, pkg, url, brand, domain, questions, competitors, provider, fresh } = opts
+  // GEO 不用 30 分钟缓存，两个原因都不是性能：
+  //  ① 它要花钱，重复查询直接烧钱；
+  //  ② 离线 fixture 和真实 provider 的结果不可比 —— 缓存里如果躺着一份 offline
+  //     报告，下一次真实查询会被它挡住，用户看到的还是假数据。
+  // GEO 的「缓存」语义是趋势：读历史。而历史由下面的 trend 接口显式提供，
+  // 这里只负责「跑一次就存一次」。
+  if (type !== 'geo') {
+    const cached = fresh ? null : db
+      .query(`SELECT * FROM audits WHERE projectId = ? AND targetType = ? ORDER BY ts DESC LIMIT 1`)
+      .get(key, type)
+    if (cached && Date.now() - new Date(cached.ts).getTime() < 30 * 60 * 1000) {
+      return { report: hydrate(cached, key, type), cached: true }
+    }
   }
-  const { report } = await runAudit(type, { repo, pkg, url })
+  const { report } = await runAudit(type, { repo, pkg, url, brand, domain, questions, competitors, provider })
   if (report && !report.error && report.score != null) {
     try {
       db.run(
@@ -221,9 +266,9 @@ async function getOrAudit(type, key, opts) {
 
 app.get('/api/scorecard', async (c) => {
   const type = resolveType(c)
-  if (!type) return c.json({ error: 'type 必填：github | npm | page（github 可省略，靠 ?repo= 推断）' }, 400)
+  if (!type) return c.json({ error: 'type 必填：github | npm | page | geo（github 可省略，靠 ?repo= 推断）' }, 400)
 
-  const { key, repo, pkg, url } = resolveTarget(type, c)
+  const { key, repo, pkg, url, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
   if (!key) return c.json({ error: `${type} 入口缺少目标参数` }, 400)
 
   // type-specific 格式校验
@@ -242,7 +287,7 @@ app.get('/api/scorecard', async (c) => {
    * 而 30 分钟缓存会让人拿到整改前的旧分数，误以为改动没生效。
    */
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, fresh })
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
   if (report?.error) return c.json({ error: report.error }, report.error.startsWith('HTTP 4') ? 400 : 502)
   if (!report || report.score == null) {
     return c.json({ error: report?.error || 'audit returned no score' }, 400)
@@ -298,6 +343,78 @@ app.get('/api/scorecard/trending', (c) => {
     LIMIT 10
   `).all(since)
   return c.json({ since, items: rows })
+})
+
+// ---------- GEO 专属接口 ----------
+//
+// 这两个接口是 GEO 能「线上免费看」的全部原因：都不调 LLM，只读库里已存的结果。
+// 线上实例不配 key，所以离线预览、历史趋势都在这里闭环；本机配了 key 才能触发
+// 新的查询（走 /api/scorecard?type=geo）。
+//
+// 注意 GEO 不进 leaderboard / trending：那两个接口的含义是「很多人在查的目标」，
+// 而 GEO 的 brandId 是使用者自己配的私有问题集，混进去会泄露他在盯什么竞品。
+
+// 趋势 —— 一个品牌的历史曲线。这是 GEO 唯一真正的产品价值：
+// 「上周 6.2，这周 4.8，第 2 位换成了竞品」比任何单次分数都有用。
+app.get('/api/geo/trend', (c) => {
+  const brand = (c.req.query('brand') || '').toString().trim()
+  if (!brand) return c.json({ error: 'brand 必填' }, 400)
+  const rows = db.query(`
+    SELECT ts, score, band, meta FROM audits
+    WHERE projectId = ? AND targetType = 'geo'
+    ORDER BY ts ASC
+  `).all(brand)
+
+  const points = rows.map((r) => {
+    let meta = {}
+    try { meta = typeof r.meta === 'string' ? JSON.parse(r.meta || '{}') : r.meta || {} } catch {}
+    return {
+      ts: r.ts,
+      score: r.score,
+      band: r.band,
+      provider: meta.provider,
+      offline: Boolean(meta.offline),
+      dims: (() => {
+        const full = db.query(`SELECT dims FROM audits WHERE projectId=? AND targetType='geo' AND ts=?`).get(brand, r.ts)
+        try { return JSON.parse(full?.dims || '[]') } catch { return [] }
+      })(),
+    }
+  })
+
+  // 离线与真实的分数不可比，但放进同一条曲线会骗人 —— 这里显式分开。
+  const live = points.filter((p) => !p.offline)
+  const offl = points.filter((p) => p.offline)
+
+  let delta = null
+  if (live.length >= 2) {
+    delta = Number((live[live.length - 1].score - live[0].score).toFixed(2))
+  }
+
+  return c.json({
+    brand,
+    live,
+    offline: offl,
+    delta,
+    note: live.length >= 2
+      ? `真实数据点 ${live.length} 个：${live[0].ts} → ${live[live.length - 1].ts}`
+      : live.length === 1
+        ? '只有 1 个真实数据点，看不出趋势 —— GEO 的价值在历史，多跑几次才有意义'
+        : '没有真实数据点（本机配 LLM key 后跑一次就有了）',
+  })
+})
+
+// provider 就绪状态 —— UI 用来告诉你「你现在能跑哪几路」。
+// 刻意不在响应里回显任何 key 值，只给 keyEnv 变量名。
+app.get('/api/geo/providers', (c) => {
+  const providers = geoProviderStatus()
+  return c.json({
+    providers,
+    offline: true,
+    online: providers.some((p) => p.ready),
+    note: providers.some((p) => p.ready)
+      ? '本机已配至少一路 LLM key，可跑真实查询（会花钱）'
+      : '本机没有任何 GEO key —— 只能看历史或用 offline 假数据看结构。GEO 要花钱调 LLM，线上实例故意不配。',
+  })
 })
 
 // OG / Twitter card 图 —— 1200x630 SVG。
@@ -396,7 +513,7 @@ function radarPolygon(score) {
 app.get('/api/scorecard/report.md', async (c) => {
   const type = resolveType(c)
   if (!type) return c.text('type 必填：github | npm | page', 400)
-  const { key, repo, pkg, url } = resolveTarget(type, c)
+  const { key, repo, pkg, url, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
   if (!key) return c.text(`${type} 入口缺少目标参数`, 400)
 
   if (type === 'github' && !/^[\w.-]+\/[\w.-]+$/.test(key)) return c.text('repo must be owner/name', 400)
@@ -404,11 +521,14 @@ app.get('/api/scorecard/report.md', async (c) => {
   if (type === 'page' && !/^https?:\/\//i.test(key)) return c.text('url 必须以 http(s):// 开头', 400)
 
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, fresh })
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
   if (report?.error) return c.text(report.error, report.error.startsWith('HTTP 4') ? 400 : 502)
   if (!report || report.score == null) return c.text('audit returned no score', 400)
 
-  const mdFn = type === 'npm' ? reportMarkdownNpm : type === 'page' ? reportMarkdownPage : reportMarkdownGithub
+  const mdFn = type === 'npm' ? reportMarkdownNpm
+    : type === 'page' ? reportMarkdownPage
+    : type === 'geo' ? reportMarkdownGeo
+    : reportMarkdownGithub
   const md = mdFn(report, { site: `https://${SITE_URL}` })
   logOp({
     actor: c.req.header('x-visitor-id') || 'anonymous',

@@ -8,6 +8,7 @@
 > 粘一个 **GitHub URL / npm 包名 / 网页 URL**，几秒钟拿到按目标类型定制的质检报告：
 > 雷达图、按「影响÷成本」排序的整改清单，一份可直接粘给 AI 的 Markdown 报告。
 > 还能**横切对比两个目标**（测试 env ↔ 线上 env、你的包 ↔ 友商），把"差在哪"直接打开看。
+> 另外新开了 **GEO**：测你的品牌在 AI 答案里出不出现（问 ChatGPT「XX 类产品有哪些」时你在不在里面）。
 > 免登录，公开仓库无需 token。
 
 **线上版**：<https://scorecard.webkubor.online>
@@ -29,12 +30,53 @@ star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆�
 | GitHub 仓库 | `server/audit.js` | 9 | description / topics / CI / issue 响应 / llms.txt 等 |
 | npm 包 | `server/audit-npm.js` | 7 | registry 元数据 + 周/月下载 + 文档 + 安全 + AI 可读性 |
 | 任意网页 | `server/audit-page.js` | 9 | 含 **AI 识别**（llms.txt / schema.org）、**爬虫根目录**（robots / sitemap / .well-known / favicon）、**WebMCP 友好性**（mcp.json / ai-plugin / openapi）等 |
+| 品牌 | `server/audit-geo.js` | 4 | AI 答案里的提及率 / 引用率 / 竞品份额 / 评价倾向（见下节） |
 
-三套维度**互不通用**——把 npm 包的"周下载"塞进 GitHub 仓的"star 增速"位会系统性误判，
+四套维度**互不通用**——把 npm 包的"周下载"塞进 GitHub 仓的"star 增速"位会系统性误判，
 所以引擎、判据、报告模板各自独立。
 
 输出不是一个分数了事，而是一份**可执行清单**——每条都带证据和「改完预计 +X 分」，
 还能一键复制成可直接交给 AI 的整改 prompt。
+
+## GEO —— 测品牌在 AI 答案里的可见度
+
+前三套测的是「你自己的东西做得好不好」，GEO 测的是**别人问 AI 时你会不会被提到**。
+入口：<https://scorecard.webkubor.online/#/geo>，或落地页顶部那张卡片。
+
+要四个输入：品牌名、自有域名、**用户会问的问题清单**、竞品。四维：
+
+| 维度 | 怎么算 | 为什么这么算 |
+|---|---|---|
+| 提及率 | 品牌名出现在答案正文里的问题占比 | 最直接的"在不在" |
+| 引用率 | 品牌域名出现在引用来源 URL 里的占比 | 被引用是转化路径，比被提及更值钱 |
+| 竞品份额 | 你被提及的次数 ÷ 全部品牌被提及次数 | 单看提及率会被「品类很小」骗过去 |
+| 评价倾向 | 出现位置的措辞：正面 / 中性 / 负面 | 只在有负面样本时才给分，没有就标「无法核实」 |
+
+**判据只有两种硬证据**：品牌名在正文里、域名在引用 URL 里。刻意不让 LLM 自评
+「这个品牌有名吗」——那是最容易被编出来的一类数字。拿不到证据的维度一律标
+`score: null` + 「无法核实」，不猜。
+
+两个容易踩的坑，引擎会挡：
+
+- **问题必须是品类问题**，不是品牌词。问「museav 怎么样」模型会顺着你的问题去提它，
+  数字好看但一文不值。所以要问「有哪些好用的 AI 视频生成工具」。
+- **不给竞品就算不出份额**。此时分母只有你自己，恒等于 100% —— 引擎直接标「无法核实」而不是给你一个满分。
+
+### 跑 GEO 要花钱，所以线上实例不配 key
+
+GEO 每次查询都要调付费 LLM API。线上实例**故意不配任何 key**：它只跑离线 fixture
+（报告首行强制标注「这份是假数据」）和读本地存下来的历史趋势，零花费。
+完整功能在本地跑：
+
+```bash
+export SCORECARD_GEO_ANTHROPIC_KEY=sk-ant-xxx   # 或 _OPENAI_ / _GEMINI_ / _PERPLEXITY_
+bun run server
+```
+
+`GET /api/geo/providers` 会告诉你本机哪几路配好了（只回报就绪与否，**永不回显 key**）。
+没配也可以用 `provider=offline` 看报告长什么样。
+
+GEO 不进排行榜也不进 trending —— 那会把「谁在盯哪些竞品」公开出去。
 
 ## 对比模式
 
@@ -93,7 +135,17 @@ scorecard react --type npm --min 6
 
 # 跳过 30 分钟缓存
 scorecard webkubor/scorecard --fresh
+
+# GEO：品牌在 AI 答案里的可见度（--q 可重复给多条问题）
+scorecard geo --brand museav --domain museav.com \
+  --q "有哪些好用的 AI 视频生成工具" \
+  --q "有哪些能批量做小红书内容的工具" \
+  --competitors runway,pika --provider perplexity
 ```
+
+GEO 的 CLI 与网页同一套判据。两条它特有的约定：**没法用 `--min` 卡离线结果**
+（fixture 是假数据，闸门通过与否都不说明问题，命令会直接失败），以及
+**没给 `--domain` / `--competitors` 时会先提醒再跑**，对应维度标「无法核实」而不是给满分。
 
 CLI 把对应 HTTP 端点暴露成 stdout，agent 默认动作就能跑。
 
@@ -141,6 +193,10 @@ Restart=always
 | `SCORECARD_PORT` / `PORT` | 54445 | 后端监听端口 |
 | `SCORECARD_HOST` / `HOST` | 0.0.0.0 | 监听地址（生产建议 127.0.0.1） |
 | `SCORECARD_GITHUB_TOKEN` | – | 只读 token，提升 API 限额并解锁 PR/Issues 维度 |
+| `SCORECARD_GEO_ANTHROPIC_KEY` | – | GEO 的 anthropic 路。**线上故意不配**（只读历史，零花费） |
+| `SCORECARD_GEO_OPENAI_KEY` | – | GEO 的 openai 路 |
+| `SCORECARD_GEO_GEMINI_KEY` | – | GEO 的 gemini 路 |
+| `SCORECARD_GEO_PERPLEXITY_KEY` | – | GEO 的 perplexity 路（唯一自带来源列表的一路，引用率判得最准） |
 | `SCORECARD_DATA_DIR` | ./data | sqlite 存放目录 |
 | `SCORECARD_BRAND` | SCORECARD | OG 图上的品牌字样 |
 | `SCORECARD_SITE_URL` | scorecard.webkubor.online | OG 图 CTA 里的站点地址 |
@@ -160,10 +216,15 @@ Restart=always
 | `GET /api/scorecard/stats` | 累计查询次数与平均分 |
 | `GET /api/scorecard/trending` | 近 24h 热门仓库 Top 10 |
 | `GET /api/scorecard/leaderboard?limit=20` | 参照榜：每个项目取最新一次质检，按分数排 |
+| `GET /api/scorecard?type=geo&brand=X&q=Q1,Q2&competitors=A,B&provider=...` | GEO 4 维可见度（**不走 30 分钟缓存**，见下） |
+| `GET /api/geo/trend?brand=X` | 该品牌的历史曲线，live 与 offline 两类分开返回 |
+| `GET /api/geo/providers` | 本机哪几路 GEO key 配好了（不回显 key） |
 | `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（SVG） |
 | `GET /api/health` | 健康检查 |
 
-任何端点加 `fresh=1` 跳过 30 分钟缓存，强制重跑。
+任何端点加 `fresh=1` 跳过 30 分钟缓存，强制重跑。**GEO 例外**：它每次调用都花真钱，
+且离线 fixture 与真实结果不可比，所以既不吃缓存也不写进别人的缓存 —— 跑一次存一次，
+趋势读历史。
 
 ## 技术栈
 

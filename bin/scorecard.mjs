@@ -12,16 +12,18 @@
  * 所以这层薄封装的意义不在功能，在**让它出现在该出现的时刻**：
  *   scorecard owner/repo --min 6    # 低于 6 分退出码 1，可直接卡在 CI / 发布脚本里
  *
- * 三种审计入口、各自判据集，不互通：
+ * 四种审计入口、各自判据集，不互通：
  *   scorecard webkubor/reel-kit              GitHub 仓库（9 维）
  *   scorecard react --type npm               npm 包（7 维）
  *   scorecard https://example.com --type page  网页（9 维，含 AI 识别 / 爬虫根目录 / WebMCP）
+ *   scorecard geo --brand X --q "..."        GEO（4 维，品牌在 AI 答案里的可见度）
  *
  * 用法：
  *   scorecard webkubor/reel-kit              人读的九维表格 + 整改清单
  *   scorecard webkubor/reel-kit --json       给 agent 解析
  *   scorecard webkubor/reel-kit --md         Markdown 报告（可直接粘给 AI）
  *   scorecard webkubor/reel-kit --min 6      质量闸门
+ *   scorecard geo --brand X --q "..." --min 5   GEO 也能当闸门（会花钱，别放进 CI 每轮跑）
  */
 
 const DEFAULT_API = process.env.SCORECARD_API || 'https://scorecard.webkubor.online'
@@ -33,20 +35,24 @@ function parseArgs(argv) {
     if (a.startsWith('--')) {
       const k = a.slice(2)
       const n = argv[i + 1]
-      if (n === undefined || n.startsWith('--')) out[k] = true
-      else { out[k] = n; i++ }
+      const val = (n === undefined || n.startsWith('--')) ? true : (i++, n)
+      // --q 是可重复的：GEO 的问题清单天然是多条，靠重复给比用分隔符拼更好 ——
+      // 问题本身就会带逗号（「有哪些好用的工具，便宜的」），拼串会把它切碎。
+      if (k === 'q') out.q = [...(Array.isArray(out.q) ? out.q : []), val]
+      else out[k] = val
     } else out._.push(a)
   }
   return out
 }
 
 const HELP = `
-scorecard — 开源项目质检（GitHub / npm / 网页三路）
+scorecard — 开源项目质检（GitHub / npm / 网页 / GEO 四路）
 
 用法:
   scorecard <owner/repo> [选项]              # GitHub 仓库质检（默认）
   scorecard <pkg> --type npm [选项]          # npm 包质检
   scorecard <url> --type page [选项]         # 网页质检
+  scorecard geo --brand <名> --q <问题> ...  # GEO：品牌在 AI 答案里的可见度
 
 选项:
   --type <类型>   入口类型：github | npm | page（缺省按 <arg> 形式推断）
@@ -60,6 +66,17 @@ scorecard — 开源项目质检（GitHub / npm / 网页三路）
   --api <地址>    自建实例地址，默认 ${DEFAULT_API}
                   （也可用环境变量 SCORECARD_API）
 
+GEO 专用选项:
+  --brand <名>     品牌名（必填）
+  --q <问题>       用户会问的问题，可重复给多条（必填）
+                   必须是**品类问题**不是品牌词 —— 问「X 怎么样」模型会顺着
+                   你的问题去提它，数字好看但一文不值
+  --domain <域名>  自有域名，用来判「引用率」。留空则该维标无法核实
+  --competitors <a,b>  竞品，逗号分隔。留空则「份额」维标无法核实
+  --provider <路>  openai | anthropic | gemini | perplexity | offline
+                   缺省按本机就绪情况自动选；本机没配 key 会落到 offline
+  （GEO 每次调用都调付费 API，且不吃缓存 —— 跑一次存一次，趋势读历史）
+
 例子:
   scorecard webkubor/reel-kit
   scorecard react --type npm
@@ -67,6 +84,8 @@ scorecard — 开源项目质检（GitHub / npm / 网页三路）
   scorecard webkubor/reel-kit --min 6      # 不达标就让脚本失败
   scorecard webkubor/reel-kit --md > report.md
   scorecard --compare-a https://test.example.com --compare-b https://example.com --type page
+  scorecard geo --brand museav --domain museav.com \\
+    --q "有哪些好用的 AI 视频生成工具" --competitors runway,pika --provider anthropic
 `
 
 /** 分数条：把 0~10 画成 10 格，一眼看出短板在哪 */
@@ -124,6 +143,90 @@ async function main() {
       for (const d of actionable) for (const g of (d.uniqueGaps?.b || [])) console.log(`    · [${d.name}] ${g}`)
       console.log('\n  A 独有、B 还没补的:')
       for (const d of actionable) for (const g of (d.uniqueGaps?.a || [])) console.log(`    · [${d.name}] ${g}`)
+    }
+    console.log('')
+    return
+  }
+
+  // ---- GEO：测品牌在 AI 答案里的可见度 ----
+  // 单独一条路径，不走下面的 type 推断：GEO 的入参不是一个「目标串」，
+  // 是品牌名 + 问题清单 + 竞品，把它硬塞进 <owner/repo> 那种单值形态只会逼出一堆特例。
+  if (args.geo || target === 'geo') {
+    const brand = (args.brand || '').toString().trim()
+    const questions = (Array.isArray(args.q) ? args.q : args.q ? [args.q] : [])
+      .map((s) => String(s).trim()).filter(Boolean)
+    const domain = (args.domain || '').toString().trim()
+    const competitors = (args.competitors || '').toString().split(',').map((s) => s.trim()).filter(Boolean)
+    const provider = (args.provider || '').toString().trim()
+
+    if (!brand || !questions.length) {
+      console.error('❌ GEO 要 --brand 和至少一个 --q')
+      console.error('   例：scorecard geo --brand museav --domain museav.com \\')
+      console.error('         --q "有哪些好用的 AI 视频生成工具" --competitors runway,pika')
+      process.exit(1)
+    }
+    if (!domain) console.error('⚠️  没给 --domain，「引用率」这一维会标无法核实')
+    if (!competitors.length) console.error('⚠️  没给 --competitors，「竞品份额」这一维会标无法核实')
+    if (!provider) console.error('⚠️  没给 --provider，按本机就绪情况自动选（一个都没配就落到 offline）')
+
+    const api = String(args.api || DEFAULT_API).replace(/\/$/, '')
+    const params = new URLSearchParams({ type: 'geo', brand, domain, q: questions.join(',') })
+    if (competitors.length) params.set('competitors', competitors.join(','))
+    if (provider && provider !== 'auto') params.set('provider', provider)
+
+    // GEO 每次调用都花钱，所以这里不传 fresh —— 服务端本来就不缓存它，
+    // 传了反而像是在说「缓存是可以绕过的」，而实际上它压根不参与缓存。
+    if (args.md) {
+      const r = await fetch(`${api}/api/scorecard/report.md?${params}`, { signal: AbortSignal.timeout(180000) })
+      const text = await r.text()
+      if (!r.ok) { console.error(`❌ ${text.slice(0, 300)}`); process.exit(1) }
+      console.log(text)
+      return
+    }
+
+    let payload
+    try {
+      const r = await fetch(`${api}/api/scorecard?${params}`, { signal: AbortSignal.timeout(180000) })
+      payload = await r.json()
+    } catch (e) {
+      console.error(`❌ 请求 ${api} 失败：${e.message}`)
+      console.error('   自建实例可用 --api 或环境变量 SCORECARD_API 指过去')
+      process.exit(1)
+    }
+    if (payload.error) { console.error(`❌ ${payload.error}`); process.exit(1) }
+    const g = payload.report || payload
+    if (args.json) { console.log(JSON.stringify(g, null, 2)); return }
+
+    // 离线 fixture 必须先说，再说数字。反过来的话，人第一眼记住的是那个假分数。
+    if (g.offline) {
+      console.log('\n  ⚠️  离线样例（假数据）—— 本机没配 LLM key，这一份不能拿去汇报')
+    }
+    console.log(`\n  ${g.project}   ${Number(g.score).toFixed(1)} 分 · ${g.band || ''}  [GEO · provider ${g.provider}]\n`)
+    for (const d of g.dims || []) {
+      // 无法核实的维度必须显式打出来。留空或画成 0 格，等于把「没测」说成「得了 0 分」。
+      if (d.score == null) { console.log(`  ${String(d.name).padEnd(8, '　')}   ——   （无法核实）`); continue }
+      console.log(`  ${String(d.name).padEnd(8, '　')} ${String(d.score).padStart(4)}  ${bar(d.score)}`)
+      for (const x of (d.gaps || []).slice(0, 3)) console.log(`             ↳ ${x}`)
+    }
+    const notes = (g.dims || []).flatMap((d) => (d.manual || []).slice(0, 1).map((m) => `[${d.name}] ${m}`))
+    if (notes.length) {
+      console.log('')
+      for (const n of notes) console.log(`  ℹ️  ${n}`)
+    }
+    if (g.failures?.length) console.log(`\n  ⚠️  ${g.failures.length} 个问题没跑成功，已从分母里剔除（不是算作没提及）`)
+
+    if (args.min !== undefined) {
+      const min = Number(args.min)
+      if (Number.isNaN(min)) { console.error('\n❌ --min 需要一个数字'); process.exit(1) }
+      // 拿 fixture 当闸门比不设闸门更糟：它会让 CI 稳定地绿（或稳定地红），
+      // 而那个颜色跟你的真实可见度毫无关系。宁可让这条命令直接失败。
+      if (g.offline) {
+        console.error('\n❌ --min 不能用在离线样例上 —— 它是一份假数据，通过或不通过都没有意义')
+        console.error('   配上 SCORECARD_GEO_*_KEY 跑真实 provider 再用闸门')
+        process.exit(1)
+      }
+      if (Number(g.score) < min) { console.error(`\n❌ ${g.score} 分 < 闸门 ${min} 分`); process.exit(1) }
+      console.log(`\n✅ ${g.score} 分 ≥ 闸门 ${min} 分`)
     }
     console.log('')
     return
