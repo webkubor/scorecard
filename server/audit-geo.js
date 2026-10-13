@@ -353,6 +353,23 @@ export function geoProviderStatus(env = process.env) {
   }))
 }
 
+/**
+ * 把「自动」解成具体的一路。
+ *
+ * 不做这一步的代价很具体：auditGeo 的形参默认值只在 undefined 时生效，所以调用方
+ * 什么都不传、或传空串，得到的都不是 anthropic 而是「未知 provider：」——
+ * 调用方说的是「自动」，返回的是一个报错。
+ *
+ * 一个都没就绪时落到 offline 而不是报错。线上实例故意不配 key，它的职责是让人看懂
+ * 报告长什么样、再去本地配 key 跑真的；直接报错的话那个页面就只剩一个红色错误框，
+ * 那不叫「零花费预览」，叫「坏了」。
+ */
+export function resolveGeoProvider(requested = '', env = process.env) {
+  if (requested && requested !== 'auto') return requested
+  const ready = geoProviderStatus(env).filter((p) => p.ready)
+  return ready.length ? ready[0].id : 'offline'
+}
+
 /** 从 SQLite 历史行还原成可用的 GEO 报告（与前三路 hydrate 同一形状）。 */
 export function hydrateGeo(row, key) {
   let meta = {}

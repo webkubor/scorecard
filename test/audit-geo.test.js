@@ -5,7 +5,7 @@
 //   ① 没配 key 时不能静默返回 0 分 —— 那会让「没跑」看起来像「跑过了但很烂」
 //   ② 离线 fixture 与真实 provider 的结果不可比 —— 混进同一条趋势就是骗人
 import { test } from 'bun:test'
-import { auditGeo, geoProviderStatus, reportMarkdown, hydrateGeo } from '../server/audit-geo.js'
+import { auditGeo, geoProviderStatus, reportMarkdown, hydrateGeo, resolveGeoProvider } from '../server/audit-geo.js'
 
 const QUESTIONS = ['有哪些好用的 AI 视频生成工具', '有哪些能批量做小红书内容的工具']
 const NO_ENV = {}
@@ -125,4 +125,28 @@ test('provider 状态只给变量名，绝不回显 key', () => {
     if (JSON.stringify(p).includes('sk-')) throw new Error('状态接口泄露了 key')
     if (p.ready !== false) throw new Error(`${p.id} 在无 key 环境不该 ready`)
   }
+})
+test('「自动」provider 必须真的自动 —— 空串不能落到「未知 provider」', () => {
+  // 症状是调用方说「自动」，拿回一个报错。auditGeo 的形参默认值只在 undefined
+  // 时生效，所以空串会一路走到 `PROVIDERS['']` 那里。
+  const fake = { SCORECARD_GEO_OPENAI_KEY: 'x' }
+  if (resolveGeoProvider('', fake) !== 'openai') throw new Error('有就绪的必须选它')
+  if (resolveGeoProvider('auto', fake) !== 'openai') throw new Error('auto 要等价于空')
+  if (resolveGeoProvider('gemini', fake) !== 'gemini') throw new Error('显式指定的不能被改写')
+
+  // 一个都没就绪 → offline，不是报错：线上实例故意不配 key，
+  // 它要给的是「报告长什么样」，不是一个红色错误框。
+  const picked = resolveGeoProvider('', NO_ENV)
+  if (picked !== 'offline') throw new Error(`没 key 时该落到 offline，实际 ${picked}`)
+
+  // offline 本身必须能被 auditGeo 接住 —— 否则「落到 offline」只是把报错换了个位置。
+  return auditGeo({ brand: 'x', questions: ['q'], provider: picked, env: NO_ENV })
+    .then((r) => { if (r.error || !r.offline) throw new Error(`offline 跑不通：${r.error}`) })
+})
+
+test('空 provider 经由 resolveGeoProvider 之后能直接跑通（回归：CLI 的默认路径）', async () => {
+  const provider = resolveGeoProvider('', NO_ENV)
+  const r = await auditGeo({ brand: 'acmetest', questions: ['有哪些好用的工具'], provider, env: NO_ENV })
+  if (r.error) throw new Error(`CLI 默认路径会失败：${r.error}`)
+  if (r.score == null) throw new Error('offline 必须给出分数，否则报告页是空的')
 })

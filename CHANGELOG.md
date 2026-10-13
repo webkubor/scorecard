@@ -6,6 +6,12 @@
 
 ### 特性
 
+- `feat(audit-geo)` — **GEO 引擎（4 维）**：测品牌在 AI 答案里的可见度。四个 provider（openai / anthropic / gemini / perplexity）共用一套 `ASK_TEMPLATE`，问的是**品类问题**（「XX 类产品有哪些」），不是「请评价这个品牌」——后者模型会顺着你的问题去提它，数字好看但一文不值
+  - 四维只看两种硬证据：品牌名出现在正文里、域名出现在引用 URL 里。不让 LLM 自评「这个品牌有名吗」——那是最容易编的一类数字
+  - 拿不到证据的维度标 `score: null` + 「无法核实」，不猜。尤其中竞品份额：没给 competitors 就算不出份额，此时分母只有自己，永远 100%
+  - `offline` fixture 供无 key 环境看结构；报告首行强制写明「这份是假数据」，不与真实结果混用
+  - 新增 `/api/geo/trend`（读历史，live / offline 两类分开，不进同一条曲线）与 `/api/geo/providers`（只暴露就绪与否，永不回显 key）
+  - `GeoCard.vue` 独立视图 + `#/geo` 路由 + 落地页入口。**刻意不进排行榜与 trending** —— 那会把「谁在盯哪些竞品」公开出去
 - `feat(audit-npm)` — npm 包独立审计引擎（7 维）：registry + 周/月下载 + GitHub README 兜底 + 文档/安全/AI 可读性
 - `feat(audit-page)` — 网页独立审计引擎（9 维）：含 ④AI 识别（llms.txt / og:type / schema.org）/ ⑤爬虫根目录（robots / sitemap / .well-known / favicon）/ ⑧WebMCP 友好性（mcp.json / ai-plugin.json / openapi.json）
 - `feat(compare)` — 报告对比：任意 type 两个目标的维度差分 + 独有 gap 清单，CLI 加 `--compare-a/--compare-b`，新增 `/api/scorecard/compare` 与 `compare.md`
@@ -14,6 +20,10 @@
 
 ### 修复
 
+- `fix(front)` — **带查询串的 hash 分享链接一律落回落地页**：`#/geo?brand=x` 按 `/` 切段时第一段拿到的是 `geo?brand=x` 而不是 `geo`。同样的 bug 也让 `#/compare?a=…&b=…` 的分享链接失效 —— 链接能生成、能贴、点开是空白。改为先摘查询串再切段
+- `fix(front)` — GEO provider「自动」选项名不副实：留空会走后端默认的 anthropic，在没配 key 的机器上等于「必失败」。改为按就绪情况落地成具体 provider，一个都没就绪则落到 offline
+- `fix(audit-geo)` — 没给 competitors 时份额维一边标「无法核实」一边照算（分母只有自己 → 恒 100%）。改为不打分
+- `fix(front)` — GEO 各维度进度条统一按总分上色，竞品份额 3.3 显示成绿色。改为按各自分数上色
 - `fix(audit-npm)` — registry 的 `readme` 字段对从 GitHub 发布的大包为空，加 GitHub raw fallback 才算"读到"
 - `fix(infra)` — 缓存命中时 latestVersion / weeklyDownloads / ttfb / finalUrl 这些 type-specific 元数据丢失（meta 列修复）
 

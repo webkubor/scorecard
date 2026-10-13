@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite'
 import { auditProject, reportMarkdown as reportMarkdownGithub } from './audit.js'
 import { auditPackage, reportMarkdown as reportMarkdownNpm } from './audit-npm.js'
 import { auditPage, reportMarkdown as reportMarkdownPage } from './audit-page.js'
-import { auditGeo, reportMarkdown as reportMarkdownGeo, geoProviderStatus, hydrateGeo } from './audit-geo.js'
+import { auditGeo, reportMarkdown as reportMarkdownGeo, geoProviderStatus, hydrateGeo, resolveGeoProvider } from './audit-geo.js'
 import { compareReports, compareMarkdown } from './compare.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -194,7 +194,10 @@ function resolveTarget(type, c) {
       domain: (c.req.query('domain') || '').toString().trim(),
       questions: split(c.req.query('q') || ''),
       competitors: split(c.req.query('competitors') || ''),
-      provider: (c.req.query('provider') || '').toString().trim(),
+      // 空 / auto 不留空串下去：auditGeo 的形参默认值只在 undefined 时生效，
+      // 传 '' 会直接撞上「未知 provider：」—— 调用方说「自动」，返回的却是一个报错。
+      // 就当「自动」在这里解开：有就绪的就用，一个都没有落到 offline。
+      provider: resolveGeoProvider((c.req.query('provider') || '').toString().trim()),
     }
   }
   return { key: '', repo: '', pkg: '', url: '' }
