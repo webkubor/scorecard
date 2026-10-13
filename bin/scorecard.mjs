@@ -94,6 +94,47 @@ function bar(score) {
   return '█'.repeat(n) + '░'.repeat(10 - n)
 }
 
+/**
+ * 从服务端的品牌清单里找一条。
+ *
+ * 刻意「找不到就返回 null」而不是报错：清单是便利设施，不是前置条件。
+ * 清单挂了或离线实例上没有这份文件，用户手写 --brand + --q 照样该能跑。
+ */
+async function fetchGeoBrand(api, brand) {
+  try {
+    const r = await fetch(`${api}/api/geo/brands`, { signal: AbortSignal.timeout(8000) })
+    if (!r.ok) return null
+    const j = await r.json()
+    const list = j.brands || []
+    if (!list.length) return null
+    if (!brand) return null
+    const want = brand.toLowerCase()
+    return list.find((b) => b.brand.toLowerCase() === want)
+      || list.find((b) => b.brand.toLowerCase().includes(want) || want.includes(b.brand.toLowerCase()))
+      || null
+  } catch { return null }
+}
+
+async function printGeoBrands(api) {
+  try {
+    const r = await fetch(`${api}/api/geo/brands`, { signal: AbortSignal.timeout(8000) })
+    const j = await r.json()
+    if (!j.brands?.length) { console.error(`❌ 品牌清单为空${j.error ? `：${j.error}` : ''}`); process.exit(1) }
+    console.log(`\n  可用品牌（真源：${j.source || 'Social Hub'}）\n`)
+    for (const b of j.brands) {
+      console.log(`  ${b.brand}  ${b.category}`)
+      console.log(`    ${b.questions.length} 个问题${b.domain ? ` · domain ${b.domain}` : ' · 无自有域名（引用率天然无法核实）'}`)
+      for (const q of b.questions) console.log(`      · ${q}`)
+      if (b.note) console.log(`    ⓘ ${b.note}`)
+      console.log('')
+    }
+    return
+  } catch (e) {
+    console.error(`❌ 取品牌清单失败：${e.message}`)
+    process.exit(1)
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const target = args._[0]
@@ -151,25 +192,46 @@ async function main() {
   // ---- GEO：测品牌在 AI 答案里的可见度 ----
   // 单独一条路径，不走下面的 type 推断：GEO 的入参不是一个「目标串」，
   // 是品牌名 + 问题清单 + 竞品，把它硬塞进 <owner/repo> 那种单值形态只会逼出一堆特例。
-  if (args.geo || target === 'geo') {
-    const brand = (args.brand || '').toString().trim()
-    const questions = (Array.isArray(args.q) ? args.q : args.q ? [args.q] : [])
+  if (args.geo || args.list || target === 'geo') {
+    let brand = (args.brand || '').toString().trim()
+    let domain = (args.domain || '').toString().trim()
+    let competitors = (args.competitors || '').toString().split(',').map((s) => s.trim()).filter(Boolean)
+    let questions = (Array.isArray(args.q) ? args.q : args.q ? [args.q] : [])
       .map((s) => String(s).trim()).filter(Boolean)
-    const domain = (args.domain || '').toString().trim()
-    const competitors = (args.competitors || '').toString().split(',').map((s) => s.trim()).filter(Boolean)
     const provider = (args.provider || '').toString().trim()
 
-    if (!brand || !questions.length) {
-      console.error('❌ GEO 要 --brand 和至少一个 --q')
-      console.error('   例：scorecard geo --brand museav --domain museav.com \\')
-      console.error('         --q "有哪些好用的 AI 视频生成工具" --competitors runway,pika')
+    const api = String(args.api || DEFAULT_API).replace(/\/$/, '')
+
+    if (args.list) { await printGeoBrands(api); return }
+
+    // 品牌清单在服务端（出自 Social Hub 的 IP 矩阵）。--q / --domain / --competitors
+    // 给了就用给的，没给就从清单里取 —— 这样「测山鬼映画」是一条命令，
+    // 而不是每次手抄一遍问题清单（抄错一次，数字就白测了）。
+    if (!questions.length || !domain || !competitors.length) {
+      const reg = await fetchGeoBrand(api, brand)
+      if (reg) {
+        if (!brand) brand = reg.brand
+        if (!questions.length) questions = reg.questions || []
+        if (!domain) domain = reg.domain || ''
+        if (!competitors.length) competitors = reg.competitors || []
+        if (reg.category && !args.q) console.error(`📋 ${reg.brand} · ${reg.category}（问题清单取自 Social Hub）`)
+      }
+    }
+
+    if (!brand) {
+      console.error('❌ GEO 要 --brand')
+      console.error('   可用品牌：scorecard geo --list')
+      process.exit(1)
+    }
+    if (!questions.length) {
+      console.error(`❌ 「${brand}」没有问题清单 —— 加 --q "用户会真的问的品类问题"`)
+      console.error('   必须是品类问题不是品牌词：问「X 怎么样」模型会顺着你的问题去提它，数字好看但一文不值')
       process.exit(1)
     }
     if (!domain) console.error('⚠️  没给 --domain，「引用率」这一维会标无法核实')
     if (!competitors.length) console.error('⚠️  没给 --competitors，「竞品份额」这一维会标无法核实')
     if (!provider) console.error('⚠️  没给 --provider，按本机就绪情况自动选（一个都没配就落到 offline）')
 
-    const api = String(args.api || DEFAULT_API).replace(/\/$/, '')
     const params = new URLSearchParams({ type: 'geo', brand, domain, q: questions.join(',') })
     if (competitors.length) params.set('competitors', competitors.join(','))
     if (provider && provider !== 'auto') params.set('provider', provider)

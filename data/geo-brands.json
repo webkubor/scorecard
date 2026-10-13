@@ -1,0 +1,67 @@
+{
+  "_readme": "GEO 品牌清单 —— 品牌与域名出自 Social Hub（dev/ip/social-hub，data/social_hub.db 的 accounts 表，12 个账号归并成 5 个 IP）。品类问题是编辑判断，不是从库里生成的：GEO 的问题必须问品类而不是品牌，否则模型会顺着你的问题去提你，测出来的数字一文不值。改品牌先改 Social Hub，改问题直接改这里。",
+  "_source": "social-hub:data/social_hub.db#accounts（生成于 2026-10-13）",
+  "brands": [
+    {
+      "brand": "山鬼映画",
+      "aliases": ["ShanGui", "山鬼映画"],
+      "domain": "",
+      "category": "AI 武侠短片 · 东方美学视频",
+      "questions": [
+        "小红书上有哪些做国风 AI 视频的账号值得关注？",
+        "有哪些用 AI 做武侠短剧的创作者？",
+        "东方美学风格的 AI 视频有哪些做得好的？"
+      ],
+      "competitors": [],
+      "note": "小红书 1887 粉是矩阵里最大的资产。domain 为空 —— 个人 IP 没有自有站，所以「引用率」这一维对它天然无法核实，这是事实不是缺陷。"
+    },
+    {
+      "brand": "一颗猫球",
+      "aliases": ["猫球"],
+      "domain": "",
+      "category": "萌宠壁纸 · 锁屏壁纸与表情贴纸",
+      "questions": [
+        "有哪些适合打工人当锁屏壁纸的萌宠账号？",
+        "小红书上有哪些可爱猫咪壁纸账号？"
+      ],
+      "competitors": [],
+      "note": ""
+    },
+    {
+      "brand": "月栖洲",
+      "aliases": [],
+      "domain": "",
+      "category": "东方传统乐器 · 笛箫与禅意环境音播客",
+      "questions": [
+        "有哪些国风器乐的环境音播客推荐？",
+        "网易云上有笛箫风格的独立音乐人吗？"
+      ],
+      "competitors": [],
+      "note": ""
+    },
+    {
+      "brand": "苏梦城",
+      "aliases": [],
+      "domain": "",
+      "category": "技术与人文长文专栏",
+      "questions": [
+        "有哪些讲技术与人文结合的中文专栏值得关注？"
+      ],
+      "competitors": [],
+      "note": "微信公众号，AI 几乎不可能引用 —— 这本身就是一条值得测出来的结论。"
+    },
+    {
+      "brand": "月老不留痕",
+      "aliases": ["doctorDacker"],
+      "domain": "",
+      "category": "AI Agent 与独立软件工程",
+      "questions": [
+        "有哪些值得关注的 AI Agent 开发者账号？",
+        "有哪些做 Claude Code / Agent 工具链的独立开发者？",
+        "独立开发者在 GitHub 上有哪些被推荐的项目？"
+      ],
+      "competitors": [],
+      "note": "技术向品牌，是矩阵里唯一有可能被 AI 引用的品类（英文语境下）。GitHub 账号 23 粉。"
+    }
+  ]
+}

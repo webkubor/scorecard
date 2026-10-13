@@ -10,7 +10,7 @@
 import { Hono } from 'hono'
 import { serveStatic } from 'hono/bun'
 import { readFile, mkdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Database } from 'bun:sqlite'
@@ -415,6 +415,37 @@ app.get('/api/geo/providers', (c) => {
       ? '本机已配至少一路 LLM key，可跑真实查询（会花钱）'
       : '本机没有任何 GEO key —— 只能看历史或用 offline 假数据看结构。GEO 要花钱调 LLM，线上实例故意不配。',
   })
+})
+
+/**
+ * 品牌清单 —— 出自 Social Hub 的 IP 矩阵。
+ *
+ * 为什么是文件而不是接口：social-hub 跑在 nanzhu，本机网关 magpie 跑在 Mac，
+ * 线上实例两边都够不着。做成接口就得让线上跨机取数据，为一个「预设清单」不值得。
+ * 清单变化极慢（IP 矩阵几个月动一次），文件足够，而且能进 git 留下改动记录。
+ *
+ * 品类问题刻意是手写的：从库里的 bio 生成不出「用户真的会问什么」。
+ * 而 GEO 最容易被做假的一环正是问题 —— 问「X 怎么样」必中，一文不值。
+ */
+app.get('/api/geo/brands', (c) => {
+  try {
+    const raw = readFileSync(new URL('../data/geo-brands.json', import.meta.url), 'utf8')
+    const j = JSON.parse(raw)
+    return c.json({
+      source: j._source || '',
+      brands: (j.brands || []).map((b) => ({
+        brand: b.brand,
+        domain: b.domain || '',
+        category: b.category || '',
+        questions: b.questions || [],
+        competitors: b.competitors || [],
+        note: b.note || '',
+      })),
+    })
+  } catch (e) {
+    // 清单读不到不该让整个 GEO 页挂掉 —— 手填品牌名照样能用。
+    return c.json({ brands: [], error: `品牌清单读取失败：${e.message}` })
+  }
 })
 
 // OG / Twitter card 图 —— 1200x630 SVG。

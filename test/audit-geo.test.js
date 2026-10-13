@@ -5,7 +5,7 @@
 //   ① 没配 key 时不能静默返回 0 分 —— 那会让「没跑」看起来像「跑过了但很烂」
 //   ② 离线 fixture 与真实 provider 的结果不可比 —— 混进同一条趋势就是骗人
 import { test } from 'bun:test'
-import { auditGeo, geoProviderStatus, reportMarkdown, hydrateGeo, resolveGeoProvider } from '../server/audit-geo.js'
+import { auditGeo, geoProviderStatus, reportMarkdown, hydrateGeo, resolveGeoProvider, mentions, magpieAvailable, magpieAsk, harvestSearchUrls, harvestInlineUrls } from '../server/audit-geo.js'
 
 const QUESTIONS = ['有哪些好用的 AI 视频生成工具', '有哪些能批量做小红书内容的工具']
 const NO_ENV = {}
@@ -149,4 +149,98 @@ test('空 provider 经由 resolveGeoProvider 之后能直接跑通（回归：CL
   const r = await auditGeo({ brand: 'acmetest', questions: ['有哪些好用的工具'], provider, env: NO_ENV })
   if (r.error) throw new Error(`CLI 默认路径会失败：${r.error}`)
   if (r.score == null) throw new Error('offline 必须给出分数，否则报告页是空的')
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// magpie 网关适配器的护栏。
+//
+// 这些测试的共同点：全部不需要网关在线。护栏的价值恰恰在于「网关挂了也拦得住」——
+// 真出事的时候（打到 claude 池烧了会话额度、线上连上了本机网关），
+// 网关本身通常是好的，坏的是配置。
+// ─────────────────────────────────────────────────────────────────────────
+
+const MAGPIE_ENV = {
+  SCORECARD_GEO_MAGPIE_BASE: 'http://127.0.0.1:3425',
+  SCORECARD_GEO_MAGPIE_KEY: 'test-key',
+  SCORECARD_GEO_MAGPIE_ALLOW_LOCAL: '1',
+}
+
+test('禁用 claude/* 池 —— GEO 跑一次就烧一次写代码的额度', async () => {
+  const env = { ...MAGPIE_ENV, SCORECARD_GEO_MAGPIE_MODEL: 'claude/claude-opus-5-5' }
+  // 1) 不能报成「可用」——报 ready 再一跑就炸，比直接说不可用更差
+  if (magpieAvailable(env)) throw new Error('claude/* 池不能被报成 ready')
+  // 2) 真被指到时，ask 必须拒绝而不是发请求出去
+  let threw = null
+  try { await magpieAsk(env, '有哪些好用的工具') } catch (e) { threw = e }
+  if (!threw) throw new Error('claude/* 池必须被拒绝')
+  if (!/Claude Code 会话额度/.test(threw.message)) throw new Error(`错误要说清代价：${threw.message}`)
+})
+
+test('拒绝 group/* 动态路由组 —— 趋势线量的必须是同一个东西', async () => {
+  const env = { ...MAGPIE_ENV, SCORECARD_GEO_MAGPIE_MODEL: 'group/mian-model-group' }
+  let threw = null
+  try { await magpieAsk(env, '有哪些好用的工具') } catch (e) { threw = e }
+  if (!threw) throw new Error('group/* 必须被拒绝')
+  if (!/动态路由组/.test(threw.message)) throw new Error(`错误要说清代价：${threw.message}`)
+})
+
+test('线上不许连本机网关 —— 没开二次确认就不给跑', () => {
+  // 生产在 nanzhu，网关在 Mac 的 127.0.0.1。这里模拟「生产上误配了 base」：
+  // 光配了 base 不够，必须还有 ALLOW_LOCAL=1 才放行。
+  if (magpieAvailable({ SCORECARD_GEO_MAGPIE_BASE: 'http://127.0.0.1:3425', SCORECARD_GEO_MAGPIE_KEY: 'k' })) {
+    throw new Error('loopback 网关没二次确认就放行了')
+  }
+  if (!magpieAvailable(MAGPIE_ENV)) throw new Error('明确确认后应该可用')
+})
+
+test('非 loopback 的 base 配了 ALLOW_LOCAL 反而要拒绝 —— 二次确认是给本机用的', async () => {
+  const env = { ...MAGPIE_ENV, SCORECARD_GEO_MAGPIE_BASE: 'https://gateway.example.com' }
+  let threw = null
+  try { await magpieAsk(env, 'q') } catch (e) { threw = e }
+  if (!threw || !/只允许用于 loopback/.test(threw.message)) {
+    throw new Error(`公网地址 + ALLOW_LOCAL 应被拒：${threw ? threw.message : '没有拒绝'}`)
+  }
+})
+
+test('引用分两档：正文手写的 URL 不算强证据', () => {
+  // 模型自己在正文里写出你的域名 ≠ 它检索到了你。这两者的差别就是幻觉与可见度的差别。
+  const weak = mentions('推荐 museav（详见 https://museav.com）', [], 'museav', 'museav.com',
+    ['https://museav.com'])
+  if (weak.cited) throw new Error('正文裸 URL 不得算作强引用')
+  if (!weak.inlineCited) throw new Error('但要标出来它是弱证据')
+  if (!weak.mentioned) throw new Error('正文出现品牌名仍然算提及')
+
+  const strong = mentions('推荐 museav', ['https://museav.com/x'], 'museav', 'museav.com', [])
+  if (!strong.cited) throw new Error('检索来源里的 URL 必须算强引用')
+})
+
+test('空 content 算这一路失败，不算「没提到品牌」', async () => {
+  // 实测该网关会让某些模型回 HTTP 200 + 空 content 数组。若不拦，
+  // 它会进分母变成「问到了但你没出现」—— 把网关故障说成品牌不可见。
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    text: async () => JSON.stringify({ type: 'message', model: 'x/y', content: [] }),
+  })
+  try {
+    let threw = null
+    try { await magpieAsk(MAGPIE_ENV, '有哪些好用的工具') } catch (e) { threw = e }
+    if (!threw) throw new Error('空 content 必须算失败')
+    if (!/计为失败/.test(threw.message)) throw new Error(`要说清是失败不是没提到：${threw.message}`)
+  } finally { globalThis.fetch = realFetch }
+})
+
+test('检索来源与正文 URL 要分开收 —— 证据强度不同', () => {
+  const content = [
+    { type: 'text', text: '推荐 museav，详见 https://museav.com/about 另见 https://example.com' },
+    { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search' },
+    { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_1',
+      content: [{ type: 'web_search_result', url: 'https://museav.com/pricing', title: '定价' }] },
+  ]
+  const strong = harvestSearchUrls(content)
+  const weak = harvestInlineUrls(content.find((b) => b.type === 'text').text)
+  if (!strong.includes('https://museav.com/pricing')) throw new Error('检索来源里的 URL 必须收进强证据')
+  if (strong.includes('https://museav.com/about')) throw new Error('正文裸 URL 不得混进强证据')
+  if (!weak.includes('https://museav.com/about')) throw new Error('正文裸 URL 要收进弱证据')
+  if (!weak.includes('https://example.com')) throw new Error('正文里的第三方 URL 也要收')
 })

@@ -78,6 +78,44 @@ bun run server
 
 GEO 不进排行榜也不进 trending —— 那会把「谁在盯哪些竞品」公开出去。
 
+### 用本机网关跑（magpie）
+
+如果本机装了 [magpie](https://github.com/webkubor/magpie) 这类 Anthropic 协议的
+LLM 网关，不用去申请 key，直接指过去：
+
+```bash
+export SCORECARD_GEO_MAGPIE_BASE=http://127.0.0.1:3425
+export SCORECARD_GEO_MAGPIE_KEY=<网关的 caller key>
+export SCORECARD_GEO_MAGPIE_ALLOW_LOCAL=1        # 显式确认「我知道这是本机地址」
+export SCORECARD_GEO_MAGPIE_MODEL=modelgo-gateway/claude-haiku-5.5
+bun run server
+```
+
+三条硬规矩，都不是洁癖，是被实测打过脸：
+
+| 规矩 | 为什么 |
+|---|---|
+| **不许用 `claude/*` 池** | 那一池走的是你自己 Claude Code 会话的额度。GEO 跑一次就烧一次写代码的额度，编辑器当场不可用（实测直接回 `rate_limit_error`）。这条是硬的，代码里直接拒。 |
+| **不许用 `group/*` 路由组** | 网关对路由组做动态选择。实测同一个 `group/mian-model-group` 先落 `codex/gpt-6-astra`、三分钟后落 `claude/claude-opus-5-5`。趋势图会把两个不同模型的结果画成一条线 —— 那条线量的不是同一个东西的变化。**钉死一个具体模型 id。** |
+| **必须显式 `ALLOW_LOCAL=1`** | 生产实例在服务器上，网关在你自己的电脑上，两者隔着网络。少了这道二次确认，一次误配就会让线上服务去连一个永远连不上的 loopback 地址。 |
+
+**引用分强弱两档。** magpie 不回结构化 citations（实测五个模型恒为 0），来源只出现在两处：
+`web_search_tool_result` 里真检索到的 URL，和模型写在正文里的裸 URL。后者可能是它凭记忆写的，
+甚至是编的 —— 所以只有前者进「引用率」，后者单列提示。把幻觉算成可见度，比不测更糟。
+
+### 一次测一个品牌
+
+品牌清单在 `data/geo-brands.json`，出自 [Social Hub](https://github.com/webkubor/social-hub)
+的 IP 矩阵（12 个平台账号归并成 5 个品牌）。有了它，「测某个品牌」是一条命令：
+
+```bash
+scorecard geo --list                    # 看有哪些品牌和问题
+scorecard geo --brand 山鬼映画 --provider magpie
+```
+
+注意 `--q` 是可以重复给的，且**必须是品类问题而不是品牌词** —— 问「X 怎么样」模型会顺着
+你的问题去提它，数字好看但一文不值。清单里的问题来自 Social Hub 的账号定位，不是从 bio 自动生成的。
+
 ## 对比模式
 
 把两个目标放一起跑，输出维度差分 + 独有 gap 清单——主用例是**测试环境 vs 线上环境**：
@@ -197,6 +235,10 @@ Restart=always
 | `SCORECARD_GEO_OPENAI_KEY` | – | GEO 的 openai 路 |
 | `SCORECARD_GEO_GEMINI_KEY` | – | GEO 的 gemini 路 |
 | `SCORECARD_GEO_PERPLEXITY_KEY` | – | GEO 的 perplexity 路（唯一自带来源列表的一路，引用率判得最准） |
+| `SCORECARD_GEO_MAGPIE_BASE` | – | 本机 magpie 网关地址，如 `http://127.0.0.1:3425` |
+| `SCORECARD_GEO_MAGPIE_KEY` | – | 网关的 caller key。**刻意不给默认值** —— 这个仓是公开的，本地开发密钥也是密钥 |
+| `SCORECARD_GEO_MAGPIE_ALLOW_LOCAL` | – | 必须显式设 `1` 才允许连 loopback 网关（防止生产误配） |
+| `SCORECARD_GEO_MAGPIE_MODEL` | `modelgo-gateway/gpt-5.4` | 钉死的模型 id。**不许 `claude/*`，不许 `group/*`** |
 | `SCORECARD_DATA_DIR` | ./data | sqlite 存放目录 |
 | `SCORECARD_BRAND` | SCORECARD | OG 图上的品牌字样 |
 | `SCORECARD_SITE_URL` | scorecard.webkubor.online | OG 图 CTA 里的站点地址 |
@@ -219,6 +261,7 @@ Restart=always
 | `GET /api/scorecard?type=geo&brand=X&q=Q1,Q2&competitors=A,B&provider=...` | GEO 4 维可见度（**不走 30 分钟缓存**，见下） |
 | `GET /api/geo/trend?brand=X` | 该品牌的历史曲线，live 与 offline 两类分开返回 |
 | `GET /api/geo/providers` | 本机哪几路 GEO key 配好了（不回显 key） |
+| `GET /api/geo/brands` | 品牌清单（出自 Social Hub 的 IP 矩阵），CLI 与前端用它免去手抄问题 |
 | `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（SVG） |
 | `GET /api/health` | 健康检查 |
 

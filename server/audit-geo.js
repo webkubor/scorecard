@@ -138,7 +138,139 @@ const PROVIDERS = {
       return { text, citations }
     },
   },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // magpie —— 本机 LLM 网关（/Users/webkubor/dev/agent-infra 下无此物，网关在
+  // magpie.app，监听 127.0.0.1:3425，说 Anthropic Messages 协议）。
+  //
+  // 它与其他四路有三点不同，都不是配置差异，是结构性的，所以单独写在这里：
+  //
+  // 1) **必须钉死具体模型，不能用 group/\*。**
+  //    网关对 group/* 做动态路由，同一个 id 今天落这池明天落那池：
+  //    实测 group/mian-model-group 先返回 codex/gpt-6-astra，三分钟后返回
+  //    claude/claude-opus-5-5。趋势图会把两个不同模型的结果画成一条曲线，
+  //    那条线量的不是同一个东西的变化。钉死 modelgo-gateway/gpt-5.4 这类
+  //    具体 id，连问两次都稳定回到自己。
+  //
+  // 2) **禁用 claude/\* 池。**
+  //    那一池走的是用户自己 Claude Code 会话的额度。实测打过去直接回
+  //    {"type":"error","error":{"type":"rate_limit_error"}}。GEO 要是碰了它，
+  //    烧的是写代码的额度，编辑器当场不可用。这是本适配器最重要的一条。
+  //
+  // 3) **网关不回结构化 citations。**
+  //    五个模型实测 citations 恒为 0：来源只出现在两个地方 ——
+  //    web_search_tool_result 块里（真检索到的）和正文行文里的裸 URL
+  //    （模型自己写的，可能来自记忆、可能是编的）。两者证据强度不同，
+  //    所以分开返回，不混成一个数组。
+  magpie: {
+    keyEnv: 'SCORECARD_GEO_MAGPIE_KEY',
+    model: 'modelgo-gateway/gpt-5.4',
+    effectiveModel: (env = process.env) =>
+      (env.SCORECARD_GEO_MAGPIE_MODEL || '').trim() || PROVIDERS.magpie.model,
+
+    available(env = process.env) {
+      const base = (env.SCORECARD_GEO_MAGPIE_BASE || '').trim()
+      if (!base || !magpieKey(env)) return false
+      const model = this.effectiveModel(env)
+      // 禁掉的池子连「可用」都不该报 —— 报成 ready 然后一跑就报错，
+      // 是比直接说「不可用」更差的体验。
+      if (MAGPIE_FORBIDDEN_POOL.some((p) => model.startsWith(p))) return false
+      // 本机网关只在 loopback 上；没有显式二次确认就不给跑（见 isLoopbackURL 注释）。
+      if (isLoopbackURL(base) && env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL !== '1') return false
+      return true
+    },
+
+    async ask(env, question) {
+      const base = (env.SCORECARD_GEO_MAGPIE_BASE || '').trim().replace(/\/$/, '')
+      const key = magpieKey(env)
+      const model = this.effectiveModel(env)
+
+      if (MAGPIE_FORBIDDEN_POOL.some((p) => model.startsWith(p))) {
+        throw new Error(`拒绝使用 ${model} —— claude/* 池走的是本机 Claude Code 会话额度，GEO 跑一次就烧一次写代码的额度`)
+      }
+      if (model.startsWith('group/')) {
+        throw new Error(`拒绝使用动态路由组 ${model} —— 同一个 id 会落到不同模型池，趋势线量的就不是同一个东西了。钉死一个具体 id。`)
+      }
+      if (!isLoopbackURL(base) && env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL === '1') {
+        throw new Error('SCORECARD_GEO_MAGPIE_ALLOW_LOCAL=1 只允许用于 loopback 网关')
+      }
+
+      const r = await fetch(`${base}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 1500,
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+          messages: [{ role: 'user', content: ASK_TEMPLATE(question) }],
+        }),
+        signal: AbortSignal.timeout(90000),
+      })
+      const raw = await r.text()
+      let j
+      try { j = JSON.parse(raw) } catch {
+        throw new Error(`网关返回非 JSON（HTTP ${r.status}）：${raw.slice(0, 160)}`)
+      }
+      if (j?.type === 'error' || !r.ok) {
+        throw new Error(`网关报错（HTTP ${r.status}）：${(j?.error?.message || raw).slice(0, 200)}`)
+      }
+      const content = Array.isArray(j.content) ? j.content : []
+      if (!content.length) {
+        // 实测 modelgo-gateway/gpt-5.4 会回一个空 content 数组，HTTP 200。
+        // 这种必须算「这一路失败」，不能当成「这一路没提到品牌」——
+        // 两者在分数上一个是天一个是地。
+        throw new Error('网关回了空 content（该模型在此不产出），这一路计为失败，不计入分母')
+      }
+      const text = content.filter((c) => c?.type === 'text').map((c) => c.text || '').join('\n')
+      if (!text.trim()) throw new Error('这一路没有正文输出，计为失败')
+      return { text, citations: harvestSearchUrls(content), inlineUrls: harvestInlineUrls(text), routedModel: j.model || model }
+    },
+  },
 }
+
+// claude/* 池走本机 Claude Code 会话的额度 —— GEO 碰它就是在烧写代码的额度。
+const MAGPIE_FORBIDDEN_POOL = ['claude/']
+
+function magpieKey(env) {
+  const k = (env.SCORECARD_GEO_MAGPIE_KEY || '').trim()
+  return k
+}
+
+function isLoopbackURL(s) {
+  try {
+    const h = new URL(s).hostname
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '0.0.0.0'
+  } catch { return false }
+}
+
+/** 强证据：web_search_tool_result 里真实检索到的 URL */
+export function harvestSearchUrls(content) {
+  const out = new Set()
+  const walk = (v) => {
+    if (!v || typeof v !== 'object') return
+    if (Array.isArray(v)) { v.forEach(walk); return }
+    if (v.type === 'web_search_tool_result') {
+      for (const r of Array.isArray(v.content) ? v.content : []) {
+        if (typeof r?.url === 'string' && /^https?:/.test(r.url)) out.add(r.url)
+      }
+    }
+    Object.values(v).forEach(walk)
+  }
+  walk(content)
+  return [...out]
+}
+
+/** 弱证据：模型自己在正文里写出来的裸 URL —— 可能来自记忆，也可能是编的 */
+export function harvestInlineUrls(text) {
+  return [...new Set((text.match(/https?:\/\/[^\s)\]，。、；"'`）]+/g) || []))]
+}
+
+export const magpieAvailable = (env = process.env) => PROVIDERS.magpie.available(env)
+export const magpieAsk = (env, question) => PROVIDERS.magpie.ask(env, question)
 
 // 离线 fixture —— 没有 key 时也能把结构跑通。明确标注这是假数据：
 // 报告里会带 offline: true，UI 与 markdown 都要显眼标出「未接真实数据源」，
@@ -163,13 +295,25 @@ const OFFLINE_FIXTURE = {
  *   ② 引用 URL 里含品牌域名
  * 刻意不做的：让 LLM 自评「这个品牌是否知名」。模型会顺着你的问题去提它，
  * 那测出来的数字是假的 —— 看着好看，一分钱价值没有。
+ *
+ * 引用分两档，这是 magpie 逼出来的：
+ *   citations  = web_search 真检索到的 URL —— 强证据，能进分数
+ *   inlineUrls = 模型自己在正文里写出来的 URL —— 弱证据，可能来自记忆也可能是编的，
+ *                拿它算分等于把模型的幻觉记成你的可见度。
+ * 所以 cited 只认强证据，弱证据单列出来给人看。
  */
-function mentions(text, citations, brand, domain) {
+export function mentions(text, citations, brand, domain, inlineUrls = []) {
   const hay = (text || '').toLowerCase()
   const nameHit = brand.toLowerCase().split(/\s+/).some((w) => w.length > 1 && hay.includes(w))
   const citeHit = Boolean(domain) && (citations || []).some((u) => u.includes(domain))
+  const inlineHit = Boolean(domain) && (inlineUrls || []).some((u) => u.includes(domain))
   const pos = hay.indexOf(brand.toLowerCase())
-  return { mentioned: nameHit || citeHit, cited: citeHit, position: pos >= 0 ? pos : null }
+  return {
+    mentioned: nameHit || citeHit,
+    cited: citeHit,
+    inlineCited: inlineHit,
+    position: pos >= 0 ? pos : null,
+  }
 }
 
 function sentiment(text, brand) {
@@ -218,7 +362,16 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
   for (const q of questions) {
     try {
       const r = offline ? (OFFLINE_FIXTURE.answers[q] || { text: '', citations: [] }) : await adapter.ask(env, q)
-      runs.push({ question: q, text: r.text || '', citations: r.citations || [], hit: mentions(r.text, r.citations, b, domain) })
+      runs.push({
+        question: q,
+        text: r.text || '',
+        citations: r.citations || [],
+        inlineUrls: r.inlineUrls || [],
+        // 每路记下实际落到哪个模型。网关会路由，钉死也回显一下 ——
+        // 趋势图上标的是「哪一路模型」，不然一周后没人知道那条线量的是谁。
+        routedModel: r.routedModel || (provider === 'magpie' ? (env.SCORECARD_GEO_MAGPIE_MODEL || '').trim() : '') || '',
+        hit: mentions(r.text, r.citations, b, domain, r.inlineUrls),
+      })
     } catch (e) {
       // 一个问题挂掉不能废掉整次 —— 少一路样本照样能出报告，但必须说清少了几路。
       failures.push({ question: q, error: (e.message || String(e)).slice(0, 200) })
@@ -250,20 +403,32 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
 
   // ② 引用率 —— 比提及率更难，也更值钱：被提到只是一句话名字，
   //    被引用意味着你的域名进了来源列表，点进去能转化。
+  //
+  //    只算强证据（真检索到的 URL）。模型自己写在正文里的 URL 单列出来给人看，
+  //    不进分数 —— 那可能是它凭记忆写的，甚至是编的，把它算成你的可见度，
+  //    就是在给模型的幻觉发奖章。
   {
     const cited = runs.filter((r) => r.hit.cited)
+    const inlineOnly = runs.filter((r) => r.hit.inlineCited && !r.hit.cited)
     const rate = Math.round((cited.length / runs.length) * 100)
     const unverified = domain ? 0 : 1
     dims.push({
       key: 'citation', name: '引用率', score: unverified ? null : clamp(rate / 10), unverifiable: unverified,
       evidence: unverified
         ? []
-        : [`${cited.length}/${runs.length} 个问题的来源里含 ${domain}（${rate}%）`],
+        : [`${cited.length}/${runs.length} 个问题的检索来源里含 ${domain}（${rate}%）`],
       gaps: unverified
         ? [`没给 domain，无法判引用 —— 引用率是本报告里最能看出差距的一维，别省`]
         : rate < 30 ? [`引用率仅 ${rate}%：AI 说得到你，但点不进你的站`] : [],
-      manual: unverified ? [] : ['不是所有 provider 都返回来源列表；不返回时这一维会系统性偏低，跨 provider 比较时注意'],
-      detail: { rate, asked: runs.length },
+      manual: unverified
+        ? []
+        : [
+            '不是所有 provider 都返回来源列表；不返回时这一维会系统性偏低，跨 provider 比较时注意',
+            ...(inlineOnly.length
+              ? [`另有 ${inlineOnly.length} 个问题里模型在正文里手写了你的地址但没进检索来源 —— 那是弱证据，没算进分。它说明模型「知道」你，但没真正检索到你`]
+              : []),
+          ],
+      detail: { rate, asked: runs.length, inlineOnly: inlineOnly.length },
     })
   }
 
@@ -347,7 +512,9 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
 export function geoProviderStatus(env = process.env) {
   return Object.entries(PROVIDERS).map(([id, p]) => ({
     id,
-    model: p.model,
+    // 显示「实际会用哪个模型」，不是「代码里写的默认值」。
+    // 配了 SCORECARD_GEO_MAGPIE_MODEL 却看到默认模型，人会以为覆盖没生效。
+    model: p.effectiveModel ? p.effectiveModel(env) : p.model,
     keyEnv: p.keyEnv,
     ready: p.available(env),
   }))
