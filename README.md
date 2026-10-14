@@ -88,20 +88,32 @@ export SCORECARD_GEO_MAGPIE_BASE=http://127.0.0.1:3425
 export SCORECARD_GEO_MAGPIE_KEY=<网关的 caller key>
 export SCORECARD_GEO_MAGPIE_ALLOW_LOCAL=1        # 显式确认「我知道这是本机地址」
 export SCORECARD_GEO_MAGPIE_MODEL=modelgo-gateway/claude-haiku-5.5
+export SCORECARD_GEO_MAGPIE_MAX_TOKENS=4000   # 默认值；2000 会把来源列表截断成零
 bun run server
 ```
+
+默认模型是 `modelgo-gateway/claude-haiku-5.5`，**因为这是实测唯一每次都真调用 `web_search` 的一路**（4/4）。
+换模型前先探一次：`node scripts/probe-magpie.mjs <model>`。`/v1/models` 列出来的**不是能力清单** ——
+实测 `opencode-go/*` 额度耗尽、`modelgo-gateway/gemini-3.6-flash` 直接 400、
+上一个默认值 `modelgo-gateway/gpt-5.4` HTTP 200 但回空 content 还白烧 token。照着列表配会得到一个「看起来配好了、跑起来只是全灭」的适配器。
 
 三条硬规矩，都不是洁癖，是被实测打过脸：
 
 | 规矩 | 为什么 |
 |---|---|
-| **不许用 `claude/*` 池** | 那一池走的是你自己 Claude Code 会话的额度。GEO 跑一次就烧一次写代码的额度，编辑器当场不可用（实测直接回 `rate_limit_error`）。这条是硬的，代码里直接拒。 |
-| **不许用 `group/*` 路由组** | 网关对路由组做动态选择。实测同一个 `group/mian-model-group` 先落 `codex/gpt-6-astra`、三分钟后落 `claude/claude-opus-5-5`。趋势图会把两个不同模型的结果画成一条线 —— 那条线量的不是同一个东西的变化。**钉死一个具体模型 id。** |
-| **必须显式 `ALLOW_LOCAL=1`** | 生产实例在服务器上，网关在你自己的电脑上，两者隔着网络。少了这道二次确认，一次误配就会让线上服务去连一个永远连不上的 loopback 地址。 |
+| **不许用 `claude/*` 池** | 那一池走的是你自己 Claude Code 会话的额度。GEO 跑一次就烧一次写代码的额度，编辑器当场不可用（实测直接回 `rate_limit_error`）。这条是硬的，代码里直接拒。**别被名字骗了** —— `modelgo-gateway/claude-*` 不在这一池：它在 `~/.config/magpie/providers.json` 里有独立 endpoint 和 `mgk_` 开头的 ModelGo key，计费在 ModelGo 那边，跟本机会话不是一回事。 |
+| **不许用 `group/*` 路由组** | 网关对路由组做动态选择。实测同一个 `group/mian-model-group` 先落 `codex/gpt-6-astra`、三分钟后落 `claude/claude-opus-5-5`。趋势图会把两个不同模型的结果画成一条线 —— 那条线量的不是同一个东西的变化。**钉死一个具体模型 id。**（它能漂进禁用池，所以是**禁用**，不是只在发起请求时拒绝。） |
+| **只认 loopback 地址，且必须显式 `ALLOW_LOCAL=1`** | 生产在服务器、网关在你电脑上，两者隔着网络。这里是**白名单**：地址必须能从 URL 里证明是 `127.0.0.1` / `localhost` / `::1`，否则不放行 —— 不是「没禁就放行」。`0.0.0.0` 也踢掉，那是本机所有网卡，局域网够得着。 |
 
-**引用分强弱两档。** magpie 不回结构化 citations（实测五个模型恒为 0），来源只出现在两处：
-`web_search_tool_result` 里真检索到的 URL，和模型写在正文里的裸 URL。后者可能是它凭记忆写的，
-甚至是编的 —— 所以只有前者进「引用率」，后者单列提示。把幻觉算成可见度，比不测更糟。
+**引用分强弱两档。** 强证据有两个来源，都收：`web_search_tool_result` 里逐条列出的检索结果，
+和正文块自带的结构化 `citations[]`（Anthropic 服务端给每句话挂的出处）。实测默认那路每次都返回后者，
+一次 3~7 条。弱证据是模型自己在句子里写的裸 URL —— 可能是凭记忆写的，甚至是编的 ——
+所以它单列提示，**不进分数**。把幻觉算成可见度，比不测更糟。
+
+**模型没检索 ≠ 没人引用你。** 报告里另有一条：如果这一轮所选模型一次都没调用 `web_search`
+（实测 `modelgo-gateway/deepseek-v4-pro` 就会回一段像模像样的正文、HTTP 200、从不用检索工具），
+「引用率」标 **无法核实**，而不是 0%。一个是量具没通电，一个是读数低，混同就没有意义了。
+提及 / 份额 / 倾向不依赖检索，照常给分。
 
 ### 一次测一个品牌
 
@@ -238,7 +250,8 @@ Restart=always
 | `SCORECARD_GEO_MAGPIE_BASE` | – | 本机 magpie 网关地址，如 `http://127.0.0.1:3425` |
 | `SCORECARD_GEO_MAGPIE_KEY` | – | 网关的 caller key。**刻意不给默认值** —— 这个仓是公开的，本地开发密钥也是密钥 |
 | `SCORECARD_GEO_MAGPIE_ALLOW_LOCAL` | – | 必须显式设 `1` 才允许连 loopback 网关（防止生产误配） |
-| `SCORECARD_GEO_MAGPIE_MODEL` | `modelgo-gateway/gpt-5.4` | 钉死的模型 id。**不许 `claude/*`，不许 `group/*`** |
+| `SCORECARD_GEO_MAGPIE_MODEL` | `modelgo-gateway/claude-haiku-5.5` | 钉死的模型 id。**不许 `claude/*`，不许 `group/*`，不许 `opencode-zen-free/*`** |
+| `SCORECARD_GEO_MAGPIE_MAX_TOKENS` | 4000 | 单次回答上限。调到 2000 会让默认模型被截断，来源列表清零 |
 | `SCORECARD_DATA_DIR` | ./data | sqlite 存放目录 |
 | `SCORECARD_BRAND` | SCORECARD | OG 图上的品牌字样 |
 | `SCORECARD_SITE_URL` | scorecard.webkubor.online | OG 图 CTA 里的站点地址 |

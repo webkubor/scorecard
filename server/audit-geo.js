@@ -148,23 +148,36 @@ const PROVIDERS = {
   // 1) **必须钉死具体模型，不能用 group/\*。**
   //    网关对 group/* 做动态路由，同一个 id 今天落这池明天落那池：
   //    实测 group/mian-model-group 先返回 codex/gpt-6-astra，三分钟后返回
-  //    claude/claude-opus-5-5。趋势图会把两个不同模型的结果画成一条曲线，
-  //    那条线量的不是同一个东西的变化。钉死 modelgo-gateway/gpt-5.4 这类
-  //    具体 id，连问两次都稳定回到自己。
+  //    claude/claude-opus-5-5 —— 它会漂，而且能漂进禁用池里。所以 group/\*
+  //    直接进了 MAGPIE_FORBIDDEN_POOL，不只是在 ask() 里拒绝。
   //
   // 2) **禁用 claude/\* 池。**
   //    那一池走的是用户自己 Claude Code 会话的额度。实测打过去直接回
   //    {"type":"error","error":{"type":"rate_limit_error"}}。GEO 要是碰了它，
   //    烧的是写代码的额度，编辑器当场不可用。这是本适配器最重要的一条。
+  //    注意别被 modelgo-gateway/claude-* 的名字骗了：那一路有独立 endpoint 和
+  //    独立的 mgk_ key，计费在 ModelGo 那边，跟本机会话不是一回事。
   //
-  // 3) **网关不回结构化 citations。**
-  //    五个模型实测 citations 恒为 0：来源只出现在两个地方 ——
-  //    web_search_tool_result 块里（真检索到的）和正文行文里的裸 URL
-  //    （模型自己写的，可能来自记忆、可能是编的）。两者证据强度不同，
-  //    所以分开返回，不混成一个数组。
+  // 3) **只认 loopback，而且是白名单式的「认得出」，不是黑名单式的「没禁」。**
+  //    这条曾经写反过，代价是生产能发出计费请求。见 isLoopbackURL 的注释。
+  //
+  // 4) **强证据有两个来源，都得收。**
+  //    web_search_tool_result 块里的检索结果，和正文块自带的结构化 citations[]。
+  //    只收前者会把真证据丢掉，让引用率系统性偏低 —— 而偏低会被读成
+  //    「AI 不引用你」。弱证据（模型自己写在句子里的裸 URL）单列，不进分数。
   magpie: {
     keyEnv: 'SCORECARD_GEO_MAGPIE_KEY',
-    model: 'modelgo-gateway/gpt-5.4',
+    // 钉死的具体 id —— 不能是 group/*（路由会漂），也不能是 claude/*（烧写代码的额度）。
+    //
+    // 换掉它是因为上一个默认值 modelgo-gateway/gpt-5.4 **实测不可用**：
+    // HTTP 200、stop_reason=max_tokens、content 是空数组，白烧 1500 个输出 token。
+    // 每一道题都会失败，但每一道都照样计费。这比「没有默认可用」糟得多 ——
+    // 它看起来配好了，跑起来只是全灭。
+    //
+    // 现在这一路是 magpie 上唯一实测每次都真调用 web_search 的（4/4 成功）：
+    // 端点 api.modelgo.com、凭证是 mgk_ 开头的 ModelGo key，
+    // 跟 claude/* 那一池（无 endpoint 无 key，复用本机会话）计费完全分开。
+    model: 'modelgo-gateway/claude-haiku-5.5',
     effectiveModel: (env = process.env) =>
       (env.SCORECARD_GEO_MAGPIE_MODEL || '').trim() || PROVIDERS.magpie.model,
 
@@ -175,8 +188,11 @@ const PROVIDERS = {
       // 禁掉的池子连「可用」都不该报 —— 报成 ready 然后一跑就报错，
       // 是比直接说「不可用」更差的体验。
       if (MAGPIE_FORBIDDEN_POOL.some((p) => model.startsWith(p))) return false
-      // 本机网关只在 loopback 上；没有显式二次确认就不给跑（见 isLoopbackURL 注释）。
-      if (isLoopbackURL(base) && env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL !== '1') return false
+      // 白名单：非回环一律不认。见 isLoopbackURL 的注释 —— 这里曾经写反了，
+      // 变成「只要不是 loopback 就放行」，公网地址配个 key 就能从生产发计费请求。
+      if (!isLoopbackURL(base)) return false
+      // 二次确认：光是对着 loopback 也不够，得用户明说「我知道这是本机地址」。
+      if (env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL !== '1') return false
       return true
     },
 
@@ -185,16 +201,16 @@ const PROVIDERS = {
       const key = magpieKey(env)
       const model = this.effectiveModel(env)
 
-      if (MAGPIE_FORBIDDEN_POOL.some((p) => model.startsWith(p))) {
-        throw new Error(`拒绝使用 ${model} —— claude/* 池走的是本机 Claude Code 会话额度，GEO 跑一次就烧一次写代码的额度`)
+      const banned = MAGPIE_FORBIDDEN_POOL.find((p) => model.startsWith(p))
+      if (banned) throw new Error(`拒绝使用 ${model} —— ${forbiddenReason(model)}`)
+      if (!isLoopbackURL(base)) {
+        throw new Error(`拒绝连接 ${base} —— magpie 适配器只认 loopback（127.0.0.1 / localhost / ::1）。生产机到不了你电脑上的 3425 端口，GEO 请在本机跑。`)
       }
-      if (model.startsWith('group/')) {
-        throw new Error(`拒绝使用动态路由组 ${model} —— 同一个 id 会落到不同模型池，趋势线量的就不是同一个东西了。钉死一个具体 id。`)
-      }
-      if (!isLoopbackURL(base) && env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL === '1') {
-        throw new Error('SCORECARD_GEO_MAGPIE_ALLOW_LOCAL=1 只允许用于 loopback 网关')
+      if (env.SCORECARD_GEO_MAGPIE_ALLOW_LOCAL !== '1') {
+        throw new Error('连本机网关要显式设 SCORECARD_GEO_MAGPIE_ALLOW_LOCAL=1 —— 二次确认「我知道这是本机地址」')
       }
 
+      const maxTokens = Number(env.SCORECARD_GEO_MAGPIE_MAX_TOKENS) || 4000
       const r = await fetch(`${base}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -204,11 +220,13 @@ const PROVIDERS = {
         },
         body: JSON.stringify({
           model,
-          max_tokens: 1500,
+          // 4000 不是随手填的：默认那路实测在 1500/2000 上 stop_reason=max_tokens，
+          // 来源列表被截断成零 —— 引用率会因为「答案被切断」被记成「没人引用你」。
+          max_tokens: maxTokens,
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
           messages: [{ role: 'user', content: ASK_TEMPLATE(question) }],
         }),
-        signal: AbortSignal.timeout(90000),
+        signal: AbortSignal.timeout(150000),
       })
       const raw = await r.text()
       let j
@@ -220,43 +238,101 @@ const PROVIDERS = {
       }
       const content = Array.isArray(j.content) ? j.content : []
       if (!content.length) {
-        // 实测 modelgo-gateway/gpt-5.4 会回一个空 content 数组，HTTP 200。
-        // 这种必须算「这一路失败」，不能当成「这一路没提到品牌」——
-        // 两者在分数上一个是天一个是地。
-        throw new Error('网关回了空 content（该模型在此不产出），这一路计为失败，不计入分母')
+        // 实测 modelgo-gateway/gpt-5.4 会回一个空 content 数组，HTTP 200，
+        // 而且白烧 1500 个输出 token。这种必须算「这一路失败」，不能当成
+        // 「这一路没提到品牌」—— 两者在分数上一个是天一个是地。
+        const spent = j?.usage?.output_tokens
+        throw new Error(
+          spent
+            ? `网关回了空 content，但已计费 ${spent} 个输出 token —— ${model} 在这个配置下不产出正文。换一个实测能跑通的模型。`
+            : '网关回了空 content（该模型在此不产出），这一路计为失败，不计入分母'
+        )
       }
       const text = content.filter((c) => c?.type === 'text').map((c) => c.text || '').join('\n')
       if (!text.trim()) throw new Error('这一路没有正文输出，计为失败')
-      return { text, citations: harvestSearchUrls(content), inlineUrls: harvestInlineUrls(text), routedModel: j.model || model }
+      const citations = harvestSearchUrls(content)
+      return {
+        text,
+        citations,
+        inlineUrls: harvestInlineUrls(text),
+        routedModel: j.model || model,
+        stopReason: j.stop_reason || null,
+        // 「模型到底有没有去搜」和「搜出来的来源里有没有你」是两个问题。
+        // 混为一谈就是把「没搜」记成「没被引用」。这一路没搜过，引用率就不该给分。
+        searchInvoked: citations.length > 0 || content.some((c) => c?.type === 'web_search_tool_result'),
+      }
     },
   },
 }
 
-// claude/* 池走本机 Claude Code 会话的额度 —— GEO 碰它就是在烧写代码的额度。
-const MAGPIE_FORBIDDEN_POOL = ['claude/']
+// claude/* 池走本机 Claude Code 会话额度 —— GEO 碰它就是在烧写代码的额度。
+// （配置层面可证：~/.config/magpie/providers.json 里 claude 池既无 endpoint 也无 key，
+//   它复用的是本机会话；modelgo-gateway 池有独立 endpoint 和 mgk_ 开头的 ModelGo key。
+//   两者计费完全分开，所以 modelgo-gateway/claude-* 是安全的，claude/* 不是。）
+//
+// group/* 同样进黑名单：它会动态落到 claude/* 里去，是绕过上面那条的后门。
+// opencode-zen-free/*：实测 403「只能在 OpenCode 内部用」，列在 /v1/models 里但打不通。
+const MAGPIE_FORBIDDEN_POOL = ['claude/', 'group/', 'opencode-zen-free/']
+
+// 拒绝理由要能直接告诉用户该怎么改，否则只是个「不可用」。
+function forbiddenReason(model) {
+  if (model.startsWith('claude/')) {
+    return 'claude/* 池走的是本机 Claude Code 会话额度，GEO 跑一次就烧一次写代码的额度'
+  }
+  if (model.startsWith('group/')) {
+    return '动态路由组会落到不同模型池（实测 group/mian-model-group 返回过 claude/claude-opus-5-5），趋势线量的就不是同一个东西。钉死一个具体 id'
+  }
+  if (model.startsWith('opencode-zen-free/')) {
+    return 'opencode-zen-free 池只能在 OpenCode 内部用，从网关打过去实测 403'
+  }
+  return '模型池在禁用名单里'
+}
 
 function magpieKey(env) {
   const k = (env.SCORECARD_GEO_MAGPIE_KEY || '').trim()
   return k
 }
 
+// 「是 loopback」必须能从 URL 里**证明**，不能靠「没说不许」。
+//
+// 原来的写法是 `isLoopbackURL(base) && ALLOW_LOCAL !== '1'` —— 那是在**限制**
+// loopback，不是**要求** loopback。于是配一个公网地址加一个 key 就直接放行：
+//   https://gateway.example.com + key，无 ALLOW_LOCAL → available() === true
+// 线上实例只要设了这两个变量，免登录的 /api/scorecard?type=geo= 就会从生产发出
+// 计费请求。方向反了：这里要的是白名单，不是黑名单。
+//
+// 另外 0.0.0.0 是「本机所有网卡」，不是回环 —— 那是能被局域网访问的地址，
+// 从「只有我自己能连」的角度看必须踢出白名单。'[::1]' 是 URL 解析 IPv6 回环的形式。
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
 function isLoopbackURL(s) {
   try {
-    const h = new URL(s).hostname
-    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '0.0.0.0'
+    const u = new URL(s)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    return LOOPBACK_HOSTS.has(u.hostname)
   } catch { return false }
 }
 
-/** 强证据：web_search_tool_result 里真实检索到的 URL */
+/** 强证据：web_search 真正检索到的 URL。两个来源，都算。 */
 export function harvestSearchUrls(content) {
   const out = new Set()
   const walk = (v) => {
     if (!v || typeof v !== 'object') return
     if (Array.isArray(v)) { v.forEach(walk); return }
+    // 来源一：web_search_tool_result 块里逐条列出的检索结果。
     if (v.type === 'web_search_tool_result') {
       for (const r of Array.isArray(v.content) ? v.content : []) {
         if (typeof r?.url === 'string' && /^https?:/.test(r.url)) out.add(r.url)
       }
+    }
+    // 来源二：正文块自带的结构化 citations[]。这是 Anthropic 服务端 web_search
+    // 在每句话旁边挂的出处，也是「这句话是从哪来的」的正路证据。
+    //
+    // 之前只认来源一，把来源二整个丢了 —— 实测 modelgo-gateway/claude-haiku-5.5
+    // 每次都返回它，一次给 3~7 条。丢掉真证据比拿不到证据更糟：那会让引用率
+    // 系统性地偏低，而偏低会被读成「AI 不引用你」，实际上它引用了。
+    for (const c of Array.isArray(v.citations) ? v.citations : []) {
+      if (typeof c?.url === 'string' && /^https?:/.test(c.url)) out.add(c.url)
     }
     Object.values(v).forEach(walk)
   }
@@ -304,9 +380,9 @@ const OFFLINE_FIXTURE = {
  */
 export function mentions(text, citations, brand, domain, inlineUrls = []) {
   const hay = (text || '').toLowerCase()
-  const nameHit = brand.toLowerCase().split(/\s+/).some((w) => w.length > 1 && hay.includes(w))
-  const citeHit = Boolean(domain) && (citations || []).some((u) => u.includes(domain))
-  const inlineHit = Boolean(domain) && (inlineUrls || []).some((u) => u.includes(domain))
+  const nameHit = brand.toLowerCase().split(/\s+/).some((w) => w.length > 1 && hasWord(hay, w))
+  const citeHit = Boolean(domain) && (citations || []).some((u) => urlHasDomain(u, domain))
+  const inlineHit = Boolean(domain) && (inlineUrls || []).some((u) => urlHasDomain(u, domain))
   const pos = hay.indexOf(brand.toLowerCase())
   return {
     mentioned: nameHit || citeHit,
@@ -314,6 +390,48 @@ export function mentions(text, citations, brand, domain, inlineUrls = []) {
     inlineCited: inlineHit,
     position: pos >= 0 ? pos : null,
   }
+}
+
+/**
+ * 品牌名按**词边界**匹配，不按子串。
+ *
+ * 之前是裸 includes()，四种误判全部当场可复现：
+ *   「推荐 N1和M1」里有 N1      → 提到了（错的，那是另一个编号）
+ *   「museum 展览」里有 muse    → 提到了（错的，那是另一个词）
+ *   「N1」还会在「M1 和 N10」里误伤
+ * 品牌名有多长都有可能被更长/更短的词包住，中文尤其严重 —— 没有空格可依赖，
+ * 所以边界用「不是字母也不是数字」来定义，而不是 \b（\b 在中文里等于失效）。
+ *
+ * 这些误判全部朝**高估**的方向偏。GEO 唯一的用处就是告诉你数字低，
+ * 一个系统性偏高的尺子，量出来的「你还行」是假的。
+ */
+function hasWord(hay, token) {
+  if (!token) return false
+  const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 前后必须是「非字母数字」或文本边界；中间允许是品牌名自带的空格/连字符
+  const inner = esc.replace(/\s+/g, '[\\s\\-·_]*')
+  const re = new RegExp(`(^|[^\\p{L}\\p{N}])${inner}(?![\\p{L}\\p{N}])`, 'u')
+  return re.test(hay)
+}
+
+/**
+ * 「这个 URL 算不算引用了你的域名」——按 hostname 比，不按整串比。
+ *
+ * 之前是 url.includes(domain)，三种误判：
+ *   https://not-ai.com/x          里有 ai.com      → 引用了（错的）
+ *   https://evil.com/?r=museav.com 里有 museav.com  → 引用了（错的）
+ *   https://museav.com.evil.com   里有 museav.com  → 引用了（错的）
+ * 第一条尤其糟：只要有人写个带你域名的查询串，你就「被引用」了。
+ *
+ * 现在解析 hostname，去掉 www.，然后 h === d || h.endsWith('.' + d) ——
+ * 后者让子域名（blog.museav.com）算命中，这是对的：子域名确实是你在引用自己。
+ */
+function urlHasDomain(url, domain) {
+  let host
+  try { host = new URL(url).hostname.toLowerCase() } catch { return false }
+  const d = String(domain || '').trim().toLowerCase().replace(/^www\./, '').replace(/\.+$/, '')
+  if (!d) return false
+  return host === d || host.endsWith(`.${d}`)
 }
 
 function sentiment(text, brand) {
@@ -339,15 +457,17 @@ function sentiment(text, brand) {
  * @param competitors 对手品牌名，用于算份额
  * @param provider offline 时不花钱、不发网络请求
  */
-export async function auditGeo({ brand, domain = '', questions = [], competitors = [], provider = 'anthropic', env = process.env }) {
+export async function auditGeo({ brand, domain = '', questions = [], competitors = [], provider = 'anthropic', env = process.env, adapter: injected = null }) {
   const b = (brand || '').trim()
   if (!b) return { error: '缺 brand', score: null }
   if (!questions.length) return { error: '缺 questions —— GEO 问的是用户会问的品类问题，品牌词测出来没有意义', score: null }
 
   const offline = provider === 'offline'
-  const adapter = PROVIDERS[provider]
-  if (!offline && !adapter) return { error: `未知 provider：${provider}（可选：${Object.keys(PROVIDERS).join(' / ')} / offline）`, score: null }
-  if (!offline && !adapter.available(env)) {
+  // adapter 可以从外面塞进来。四个维度的算分逻辑（尤其「没检索过就不给引用率打���」
+  // 这种分支）必须能在不发网络请求的情况下测到 —— 否则每次改判据都得真花钱跑一遍。
+  const adapter = injected || PROVIDERS[provider]
+  if (!offline && !injected && !adapter) return { error: `未知 provider：${provider}（可选：${Object.keys(PROVIDERS).join(' / ')} / offline）`, score: null }
+  if (!offline && !injected && !adapter.available(env)) {
     return {
       error: `${provider} 没配 key（环境变量 ${adapter.keyEnv}）—— GEO 要花钱调 LLM，没 key 不能跑。线上实例故意不配，只读本地存下来的历史；本机想跑完整功能就自己 clone 一份配上 key，或用 provider=offline 看结构。`,
       score: null,
@@ -370,6 +490,11 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
         // 每路记下实际落到哪个模型。网关会路由，钉死也回显一下 ——
         // 趋势图上标的是「哪一路模型」，不然一周后没人知道那条线量的是谁。
         routedModel: r.routedModel || (provider === 'magpie' ? (env.SCORECARD_GEO_MAGPIE_MODEL || '').trim() : '') || '',
+        // 「有没有去搜」和「搜出来有没有你」是两个问题。不分开记，模型偷懒不搜
+        // 就会显示成「引用率 0%」—— 一个是量具没通电，一个是读数低。
+        searchInvoked: r.searchInvoked !== false,
+        // 被 max_tokens 切断的答案，来源列表可能是空的 —— 那是切断了，不是没引用。
+        stopReason: r.stopReason || null,
         hit: mentions(r.text, r.citations, b, domain, r.inlineUrls),
       })
     } catch (e) {
@@ -411,15 +536,32 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
     const cited = runs.filter((r) => r.hit.cited)
     const inlineOnly = runs.filter((r) => r.hit.inlineCited && !r.hit.cited)
     const rate = Math.round((cited.length / runs.length) * 100)
-    const unverified = domain ? 0 : 1
+    // 三种情况这一维都判不了，全部标「无法核实」，而不是给一个数：
+    //   ① 没给 domain         —— 没有可比对的目标
+    //   ② 模型压根没调用 web_search —— **没有证据来源**。实测 deepseek-v4-pro 会
+    //      老老实实回一段正文、HTTP 200、从不用检索工具。这时报「引用率 0%」是
+    //      把「它没搜」记成「没人引用你」—— 一个是量具没通电，一个是读数低。
+    //   ③ 答案被 max_tokens 截断且零来源 —— 来源列表是被切断的，不是空的。
+    //      截断的那道题不进这一维的分母，但它产出了正文，提及/份额仍然算数。
+    const searched = runs.some((r) => r.searchInvoked !== false)
+    const truncatedNoSrc = runs.filter((r) => r.stopReason === 'max_tokens' && !(r.citations || []).length)
+    const scored = runs.filter((r) => !truncatedNoSrc.includes(r))
+    const citedScored = scored.filter((r) => r.hit.cited)
+    const rateScored = scored.length ? Math.round((citedScored.length / scored.length) * 100) : 0
+    const whyUnverified = !domain
+      ? '没给 domain，无法判引用 —— 引用率是本报告里最能看出差距的一维，别省'
+      : !searched
+        ? '本轮所选模型一次都没调用 web_search —— 这一维没有证据来源，不是「没有被引用」。换 provider，或换一个实测会检索的模型'
+        : !scored.length
+          ? '所有答案都被 max_tokens 截断且没有来源可读，这一维无从判断'
+          : ''
+    const unverified = whyUnverified ? 1 : 0
     dims.push({
-      key: 'citation', name: '引用率', score: unverified ? null : clamp(rate / 10), unverifiable: unverified,
+      key: 'citation', name: '引用率', score: unverified ? null : clamp(rateScored / 10), unverifiable: unverified,
       evidence: unverified
         ? []
-        : [`${cited.length}/${runs.length} 个问题的检索来源里含 ${domain}（${rate}%）`],
-      gaps: unverified
-        ? [`没给 domain，无法判引用 —— 引用率是本报告里最能看出差距的一维，别省`]
-        : rate < 30 ? [`引用率仅 ${rate}%：AI 说得到你，但点不进你的站`] : [],
+        : [`${citedScored.length}/${scored.length} 个问题的检索来源里含 ${domain}（${rateScored}%）`],
+      gaps: unverified ? [whyUnverified] : rateScored < 30 ? [`引用率仅 ${rateScored}%：AI 说得到你，但点不进你的站`] : [],
       manual: unverified
         ? []
         : [
@@ -427,8 +569,15 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
             ...(inlineOnly.length
               ? [`另有 ${inlineOnly.length} 个问题里模型在正文里手写了你的地址但没进检索来源 —— 那是弱证据，没算进分。它说明模型「知道」你，但没真正检索到你`]
               : []),
+            ...(truncatedNoSrc.length
+              ? [`${truncatedNoSrc.length} 道题因 max_tokens 截断且零来源，已从这一维的分母里剔除（它们仍计入提及与份额）`]
+              : []),
           ],
-      detail: { rate, asked: runs.length, inlineOnly: inlineOnly.length },
+      detail: {
+        rate: rateScored, asked: scored.length, inlineOnly: inlineOnly.length,
+        searched, truncatedDropped: truncatedNoSrc.length,
+        routedModels: [...new Set(runs.map((r) => r.routedModel).filter(Boolean))],
+      },
     })
   }
 
@@ -441,8 +590,10 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
     for (const r of runs) {
       const hay = r.text.toLowerCase()
       for (const n of Object.keys(tally)) {
-        const key = n.toLowerCase()
-        if (hay.includes(key) || (r.citations || []).some((u) => u.toLowerCase().includes(key))) tally[n]++
+        // 同样按词边界判，不能用 includes —— 否则 muse 会被 museum 算一次，
+        // 份额的分母被凭空灌水，你和对手的相对位置就失真了。
+        if (hasWord(hay, n.toLowerCase()) || (r.citations || []).some((u) => u.toLowerCase().includes(n.toLowerCase())))
+          tally[n]++
       }
     }
     const total = Object.values(tally).reduce((s, v) => s + v, 0)

@@ -197,9 +197,125 @@ test('非 loopback 的 base 配了 ALLOW_LOCAL 反而要拒绝 —— 二次确�
   const env = { ...MAGPIE_ENV, SCORECARD_GEO_MAGPIE_BASE: 'https://gateway.example.com' }
   let threw = null
   try { await magpieAsk(env, 'q') } catch (e) { threw = e }
-  if (!threw || !/只允许用于 loopback/.test(threw.message)) {
+  if (!threw || !/只认 loopback/.test(threw.message)) {
     throw new Error(`公网地址 + ALLOW_LOCAL 应被拒：${threw ? threw.message : '没有拒绝'}`)
   }
+})
+
+// ↓ 以下是「网关适配器对完设计文档」之后补的回归锁。每一个都对应一个当场复现过的缺陷。
+
+test('公网/LAN base 配了 key 也一律不放行 —— 守卫曾经是反的', () => {
+  // 这条曾经写反：判断是 `是 loopback 且没二次确认 才拒绝`，
+  // 等于「只要不是 loopback 就放行」。于是公网地址配个 key 就 ready，
+  // 免登录的 /api/scorecard?type=geo= 会从生产发出计费请求。
+  for (const base of ['https://gateway.example.com', 'http://192.168.1.9:3425']) {
+    if (magpieAvailable({ SCORECARD_GEO_MAGPIE_BASE: base, SCORECARD_GEO_MAGPIE_KEY: 'k' })) {
+      throw new Error(`${base} 不该放行 —— 生产会从这里发出计费请求`)
+    }
+    if (magpieAvailable({ SCORECARD_GEO_MAGPIE_BASE: base, SCORECARD_GEO_MAGPIE_KEY: 'k', SCORECARD_GEO_MAGPIE_ALLOW_LOCAL: '1' })) {
+      throw new Error(`${base} 配了 ALLOW_LOCAL 也不该放行 —— ALLOW_LOCAL 不是万能钥匙`)
+    }
+  }
+})
+
+test('0.0.0.0 不算 loopback —— 那是本机所有网卡，局域网够得着', () => {
+  if (magpieAvailable({ SCORECARD_GEO_MAGPIE_BASE: 'http://0.0.0.0:3425', SCORECARD_GEO_MAGPIE_KEY: 'k', SCORECARD_GEO_MAGPIE_ALLOW_LOCAL: '1' })) {
+    throw new Error('0.0.0.0 是所有网卡不是回环，放行等于开放给局域网')
+  }
+})
+
+test('禁用池不能被报成 ready —— 报 ready 再一跑就炸', () => {
+  for (const model of ['claude/claude-opus-5-5', 'group/mian-model-group', 'opencode-zen-free/big-pickle']) {
+    if (magpieAvailable({ ...MAGPIE_ENV, SCORECARD_GEO_MAGPIE_MODEL: model })) {
+      throw new Error(`${model} 不能报 ready`)
+    }
+  }
+})
+
+test('默认模型必须是实测能跑通的那一路', () => {
+  // 上一个默认 modelgo-gateway/gpt-5.4 实测 HTTP 200 + 空 content + 白烧 1500 token：
+  // 每一道题都失败，每一道都计费。看起来配好了，跑起来只是全灭。
+  const m = geoProviderStatus({}).find((p) => p.id === 'magpie')
+  if (m.model !== 'modelgo-gateway/claude-haiku-5.5') {
+    throw new Error(`默认模型是 ${m.model} —— 必须是实测 4/4 会调用 web_search 的那一路`)
+  }
+  if (m.model.startsWith('claude/') || m.model.startsWith('group/')) {
+    throw new Error('默认模型不能落在禁用池里')
+  }
+})
+
+test('text.citations[] 也是强证据 —— 丢掉真证据比拿不到更糟', () => {
+  // 实测 claude-haiku-5.5 每次都返回结构化 citations[]（一次 3~7 条）。
+  // 之前只认 web_search_tool_result，把这些整个丢了：引用率会系统性偏低，
+  // 而偏低会被读成「AI 不引用你」—— 实际上它引用了。
+  const content = [
+    { type: 'text', text: '推荐 museav。', citations: [
+      { type: 'web_search_result_location', url: 'https://museav.com/pricing', title: '定价' },
+    ] },
+    { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search' },
+  ]
+  if (!harvestSearchUrls(content).includes('https://museav.com/pricing')) {
+    throw new Error('结构化 citation 被丢了')
+  }
+})
+
+test('品牌名按词边界判，不按子串 —— 误判全都朝高估偏', () => {
+  const bad = [
+    ['推荐 N1和M1 两个方案', [], 'N1', '', 'mentioned'],       // N1 嵌在编号里
+    ['推荐 museum 展览', [], 'muse', '', 'mentioned'],          // muse 是 museum 的一部分
+  ]
+  for (const [text, cites, brand, dom, field] of bad) {
+    if (mentions(text, cites, brand, dom)[field]) {
+      throw new Error(`「${text}」不该算提到了 ${brand} —— 子串匹配会让分数虚高`)
+    }
+  }
+  if (!mentions('推荐 museav 很好用', [], 'museav').mentioned) throw new Error('真提及不能被漏掉')
+})
+
+test('域名按 hostname 比，不按整串比', () => {
+  const bad = [
+    ['https://not-ai.com/x', 'ai.com'],       // 子域名前缀撞车
+    ['https://evil.com/?r=museav.com', 'museav.com'], // 查询串里带你的域名
+    ['https://museav.com.evil.com/x', 'museav.com'],  // 域名后缀挂在你后面
+  ]
+  for (const [url, dom] of bad) {
+    if (mentions('x', [url], 'museav', dom).cited) {
+      throw new Error(`${url} 不该算引用了 ${dom}`)
+    }
+  }
+  // 真引用和子域名必须仍然算数：子域名确实是你在引用自己
+  if (!mentions('推荐 museav', ['https://museav.com/x'], 'museav', 'museav.com').cited) {
+    throw new Error('真引用被漏掉了')
+  }
+  if (!mentions('推荐 museav', ['https://blog.museav.com/x'], 'museav', 'museav.com').cited) {
+    throw new Error('子域名算命中是对的')
+  }
+})
+
+test('模型压根没调用 web_search 时，引用率是无法核实而不是 0%', async () => {
+  // 实测 deepseek-v4-pro 会回一段像模像样的正文、HTTP 200、从不用检索工具。
+  // 那种情况下报「引用率 0%」是把「它没搜」记成「没人引用你」——
+  // 一个是量具没通电，一个是读数低。两者混同，整个工具就失去了意义。
+  const q = '有哪些好用的 AI 视频生成工具'
+  const r = await auditGeo({
+    brand: 'museav', domain: 'museav.com', competitors: ['runway'], questions: [q],
+    provider: 'fake', env: {},
+    adapter: {
+      async ask() {
+        return { text: '常见的有 Runway、Pika、museav 等。', citations: [], searchInvoked: false, routedModel: 'fake/lazy' }
+      },
+    },
+  })
+  const cite = r.dims.find((d) => d.key === 'citation')
+  if (cite.score !== null || cite.unverifiable !== 1) {
+    throw new Error(`没检索过就该标无法核实，实际拿到 score=${cite.score}`)
+  }
+  if (!/没调用 web_search/.test(cite.gaps.join(' '))) {
+    throw new Error(`要说清是「没搜」不是「没被引用」：${JSON.stringify(cite.gaps)}`)
+  }
+  // 提及不依赖检索，必须照常给分
+  const mention = r.dims.find((d) => d.key === 'mention')
+  if (mention.score === null) throw new Error('提及率不依赖检索，不该跟着变成无法核实')
 })
 
 test('引用分两档：正文手写的 URL 不算强证据', () => {
