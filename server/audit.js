@@ -287,6 +287,16 @@ export async function auditProject({ owner, repo, token }) {
   const dirs = entries.filter((f) => f.type === 'dir').map((f) => f.name)
   const hasFile = (re) => files.some((f) => re.test(f))
   const cf = community.ok ? community.data?.files || {} : {}
+  let hasIssueTemplate = !!cf.issue_template
+  if (!hasIssueTemplate) {
+    if (dirs.includes('.github') || files.includes('.github')) {
+      const it = await gh(`/repos/${full}/contents/.github/ISSUE_TEMPLATE`, token)
+      if (it.ok && Array.isArray(it.data) && it.data.length > 0) hasIssueTemplate = true
+    }
+    if (!hasIssueTemplate) {
+      hasIssueTemplate = hasFile(/^issue_template(?:\.md)?$/i)
+    }
+  }
 
   // package.json 要单独取内容（contents 列表只给文件名）
   let pkg = null
@@ -540,7 +550,7 @@ export async function auditProject({ owner, repo, token }) {
     let score = 1
     cf.license ? (score += 3, ev.push(`LICENSE: ${r.license?.spdx_id || '有'}`)) : gaps.push('没有 LICENSE —— 公司用户直接过滤掉')
     cf.contributing ? (score += 1.5, ev.push('有 CONTRIBUTING')) : gaps.push('没有 CONTRIBUTING')
-    cf.issue_template ? (score += 1, ev.push('有 issue 模板')) : gaps.push('没有 issue 模板')
+    hasIssueTemplate ? (score += 1, ev.push('有 issue 模板')) : gaps.push('没有 issue 模板')
 
     const issues = (openIssues.ok ? openIssues.data : []).filter((i) => !i.pull_request)
     const now = Date.now()
@@ -668,17 +678,27 @@ export async function auditProject({ owner, repo, token }) {
     else gaps.push('没有 llms.txt —— LLM 只能自己翻文件猜重点')
 
     // ── 官网级：robots.txt 放不放 AI 爬虫、有没有 llms.txt
-    // homepage 不是 http(s) URL 或压根没配，按「查不到」剔除，不算项目的错。
+    // homepage 不是 http(s) URL、压根没配、或指向代码托管平台自身时，按「查不到/无独立官网」剔除，不算项目的错。
     let origin = null
+    let isHostingPlatform = false
     if (r.homepage) {
       try {
         const u = new URL(r.homepage)
-        if (/^https?:$/.test(u.protocol)) origin = u.origin
+        if (/^https?:$/.test(u.protocol)) {
+          const host = u.hostname.toLowerCase()
+          isHostingPlatform = host === 'github.com' || host.endsWith('.github.com') ||
+                              host === 'gitlab.com' || host === 'gitee.com'
+          if (!isHostingPlatform) {
+            origin = u.origin
+          }
+        }
       } catch { /* 非 URL 的 homepage */ }
     }
     if (!origin) {
       unv += 3.5
-      manual.push('没有可用的官网（http(s) homepage）—— robots.txt / llms.txt 判不了，这 3.5 分已从满分中剔除')
+      manual.push(isHostingPlatform
+        ? 'homepage 指向代码托管平台自身（非独立官网）—— robots.txt / llms.txt 判不了，这 3.5 分已从满分中剔除'
+        : '没有可用的官网（http(s) homepage）—— robots.txt / llms.txt 判不了，这 3.5 分已从满分中剔除')
     }
 
     // 三个独立请求并发：GitHub 的 copilot 指令 + 官网的 robots.txt / llms.txt
