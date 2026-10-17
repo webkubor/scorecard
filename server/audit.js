@@ -386,10 +386,16 @@ export async function auditProject({ owner, repo, token }) {
         ev.push('package.json 标了 private，不走 registry')
         score += 2
       } else if (name) {
-        // crates.io / Packagist 不带 UA 会拒
-        const res = await fetch(m.url(name), {
-          headers: { 'User-Agent': 'scorecard-audit (+https://scorecard.webkubor.online)' }
+        // crates.io / Packagist 不带 UA 会拒；加超时并在 npm 官方源超时时回退公共镜像验证，防止网络偶发抖动误判「没发布」
+        let res = await fetch(m.url(name), {
+          headers: { 'User-Agent': 'scorecard-audit (+https://scorecard.webkubor.online)' },
+          signal: AbortSignal.timeout(5000)
         }).catch(() => null)
+        if (!res?.ok && m.eco === 'npm') {
+          res = await fetch(`https://registry.npmmirror.com/${encodeURIComponent(name)}`, {
+            signal: AbortSignal.timeout(5000)
+          }).catch(() => null)
+        }
         if (res?.ok) {
           ev.push(`${m.eco} 已发布：${name}`)
           score += 4
