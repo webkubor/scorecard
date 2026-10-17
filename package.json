@@ -1,9 +1,9 @@
 {
-  "name": "scorecard",
+  "name": "project-scorecard",
   "private": false,
   "version": "2.0.0",
   "type": "module",
-  "description": "开源项目九维度质检 —— 粘一个 GitHub URL，拿到雷达图、整改清单和一张可分享长图。",
+  "description": "九维度开源项目质检：GitHub 仓库 / npm 包 / 网站 / 品牌 GEO。判据对齐 NIST SSDF、OpenSSF、OWASP SAMM；读不到的项标「无法核实」不猜分。免登录。",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -40,5 +40,26 @@
     "dist",
     "AGENTS.md",
     "llms.txt"
+  ],
+  "keywords": [
+    "project-maturity",
+    "repo-health",
+    "project-audit",
+    "open-source-metrics",
+    "code-quality",
+    "quality-assurance",
+    "readme",
+    "documentation",
+    "changelog",
+    "ci-cd",
+    "github-actions",
+    "security",
+    "self-hosted",
+    "llm",
+    "geo",
+    "generative-engine-optimization",
+    "llms-txt",
+    "developer-tools",
+    "github"
   ]
 }
