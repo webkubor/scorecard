@@ -522,9 +522,16 @@ app.get('/api/geo/brands', (c) => {
   }
 })
 
-// OG / Twitter card 图 —— 1200x630 SVG。
-// 用 SVG 而不是 PNG：少 1 个依赖，bun 直接吐 string。Twitter/微博/即刻 都认
-// og:image 的 image/svg+xml，2024 起标准支持。
+// OG / Twitter card 图 —— 1200x630，PNG 优先，SVG 兜底。
+//
+// 为什么默认 PNG：这张图是分享出去的门面。原先只吐 image/svg+xml，代码注释
+// 写着「Twitter/微博/即刻都认，2024 起标准支持」—— **这条是错的**，实测与社区
+// 结论一致：主流平台的抓取器不渲染 SVG，分享出去是空白图
+// （见 github.com/precice/precice.github.io/issues/724 与
+//   bdougie/contributor.info#1235，都是同一个症状）。
+// og:image 的规范一直要求 raster image；PNG 是各家都认的最小公分母。
+//
+// ?fmt=svg 仍可拿到矢量版（自己嵌页面、做长图时用），只是别拿它去做 og:image。
 app.get('/og/scorecard/:owner/:repo', async (c) => {
   const owner = c.req.param('owner')
   const repo = c.req.param('repo').replace(/\.git$/, '')
@@ -582,10 +589,59 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
   </g>
 </svg>`.trim()
 
+  // 默认要 PNG。转不了就退回 SVG 并如实说明 —— 宁可内容类型是错的，
+  // 也不要静默给一张抓取器渲染不出来的图，让人以为卡片本来就是空白的。
+  if (c.req.query('fmt') === 'svg') {
+    c.header('Content-Type', 'image/svg+xml; charset=utf-8')
+    c.header('Cache-Control', 'public, max-age=1800')
+    return c.body(svg)
+  }
+
+  try {
+    const png = await svgToPng(svg)
+    if (png) {
+      c.header('Content-Type', 'image/png')
+      c.header('Cache-Control', 'public, max-age=1800')
+      return c.body(png)
+    }
+    console.warn('[og] 无 SVG→PNG 转码器，回退 SVG；分享卡在多数平台会是空白')
+  } catch (e) {
+    console.warn(`[og] SVG→PNG 失败（${e.message}），回退 SVG`)
+  }
+
   c.header('Content-Type', 'image/svg+xml; charset=utf-8')
-  c.header('Cache-Control', 'public, max-age=1800')
+  c.header('Cache-Control', 'public, max-age=600')
   return c.body(svg)
 })
+
+// SVG → PNG。走外部 rsvg-convert 而不是引 sharp/native 依赖：
+// 这个项目的卖点之一就是「单进程、零重依赖」，不该为一张分享卡拉原生模块。
+// 转码器不存在时返回 null，让调用方决定怎么兜底。
+let rsvgChecked = null
+async function svgToPng(svg) {
+  if (rsvgChecked === false) return null
+  try {
+    const proc = Bun.spawn(['rsvg-convert', '-w', '1200', '-h', '630', '-f', 'png'], {
+      stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
+    })
+    proc.stdin.write(svg)
+    await proc.stdin.end()
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).arrayBuffer(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    if (code !== 0) throw new Error(err.trim() || `rsvg-convert exit ${code}`)
+    rsvgChecked = true
+    return out
+  } catch (e) {
+    if (/ENOENT|not found/i.test(e.message)) {
+      rsvgChecked = false
+      console.warn('[og] 未安装 rsvg-convert（brew install librsvg），分享卡将回退 SVG')
+    }
+    throw e
+  }
+}
 
 function escapeXml(s) {
   return String(s).replace(/[<>&'"]/g, (c) => ({
