@@ -331,6 +331,80 @@ app.get('/api/scorecard/leaderboard', (c) => {
   return c.json({ items: rows })
 })
 
+// 复检 —— 同一个项目的「上一次 vs 这一次」。
+//
+// 和 /api/scorecard/compare 的区别：compare 比 A、B 两个不同目标；
+// 这里比同一个项目的两次时间点。它回答的是「我照整改清单改完，到底变好没有」。
+//
+// 没有这条，项目就只是个一次性工具：用户改完代码回来，看到的是一个
+// 全新的分数，和上次没有任何关系，无法证明自己做的工作有没有用。
+//
+// 缓存命中不算一次新审计 —— 只有真正跑了引擎才写 audits 表，
+// 所以这里的时间点都是真实的重新评估，不是「刷新了页面」。
+app.get('/api/scorecard/history', (c) => {
+  const target = c.req.query('target') || c.req.query('repo')
+  const type = c.req.query('type') || 'github'
+  if (!target) return c.json({ error: '缺少 target 参数' }, 400)
+
+  const limit = Math.min(Number(c.req.query('limit')) || 10, 50)
+  const rows = db.query(`
+    SELECT ts, score, band, dims, todos
+    FROM audits
+    WHERE projectId = ? AND targetType = ?
+    ORDER BY ts DESC
+    LIMIT ?
+  `).all(target, type, limit)
+
+  if (!rows.length) return c.json({ target, type, points: [], changes: [], firstRun: true })
+
+  // 时间正序更符合「读 trend」的直觉
+  const points = rows
+    .slice()
+    .reverse()
+    .map((r) => ({ ts: r.ts, score: r.score, band: r.band }))
+
+  // 维度级变化：拿最新一次和上一轮比。只有两轮以上才有「变化」可言。
+  let changes = []
+  if (rows.length >= 2) {
+    const [latest, prev] = rows
+    const parse = (s) => {
+      try { return JSON.parse(s) || [] } catch { return [] }
+    }
+    const prevDims = new Map(parse(prev.dims).map((d) => [d.key, d]))
+    changes = parse(latest.dims)
+      .map((d) => {
+        const before = prevDims.get(d.key)
+        if (!before) return null
+        // null 是「无法核实」，不是 0 —— 和分数之间不能直接相减
+        if (d.score == null || before.score == null) return null
+        const delta = Math.round((d.score - before.score) * 10) / 10
+        return delta === 0
+          ? null
+          : { key: d.key, name: d.name, from: before.score, to: d.score, delta }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.delta - a.delta)
+  }
+
+  const latestScore = rows[0].score
+  const prevScore = rows[1]?.score ?? null
+  const totalDelta =
+    latestScore != null && prevScore != null
+      ? Math.round((latestScore - prevScore) * 10) / 10
+      : null
+
+  return c.json({
+    target,
+    type,
+    points,
+    changes,
+    totalDelta,
+    latest: { ts: rows[0].ts, score: latestScore, band: rows[0].band },
+    previous: rows[1] ? { ts: rows[1].ts, score: prevScore, band: rows[1].band } : null,
+    runs: rows.length,
+  })
+})
+
 // 今日热门 —— 近 24h 被查过几次
 app.get('/api/scorecard/trending', (c) => {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()

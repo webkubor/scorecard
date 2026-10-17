@@ -30,9 +30,19 @@ const skill = readFileSync(join(ROOT, 'skills/project-maturity-audit/SKILL.md'),
 const engine = [...audit.matchAll(/key: '([a-z]+)', name: '([^']+)'/g)]
   .map((m) => ({ key: m[1], name: m[2] }))
 
-if (engine.length !== 9) {
-  console.error(`❌ 从 server/audit.js 只解析出 ${engine.length} 个维度，期望 9 个。`)
-  console.error('   要么维度真的增减了（那就同步改 skill 和这个脚本），要么写法变了导致正则失效。')
+// 这里原本硬编码「必须等于 9」。那条检查在两件事上都是错的：
+//   ① 加维度是正常演进，不该被门禁挡住 —— 挡人的门禁最后会被绕过；
+//   ② 它把「正则没匹配上」和「维度真的变了」混成同一个错误，看不出是哪种。
+// 改为只守真正的不变量：能解析出维度、key 不重复、skill 覆盖得到。
+if (engine.length === 0) {
+  console.error('❌ 从 server/audit.js 解析不出任何维度 —— 正则失效或写法变了。')
+  process.exit(1)
+}
+
+const dupKeys = engine.map((d) => d.key).filter((k, i, a) => a.indexOf(k) !== i)
+if (dupKeys.length) {
+  console.error(`❌ 引擎里有重复的维度 key：${[...new Set(dupKeys)].join(', ')}`)
+  console.error('   重复 key 会让前端按 key 渲染的列表串位。')
   process.exit(1)
 }
 
@@ -40,7 +50,7 @@ if (engine.length !== 9) {
 // 散文里的名字可以有多种说法，代码里的 key 只有一个
 const missing = engine.filter((d) => !skill.includes(d.name))
 
-console.log('引擎九维：' + engine.map((d) => `${d.name}(${d.key})`).join(' · '))
+console.log(`引擎 ${engine.length} 维：` + engine.map((d) => `${d.name}(${d.key})`).join(' · '))
 
 if (!missing.length) {
   console.log('\n✅ skill 里都能找到对应维度，两边说的是同一套')
