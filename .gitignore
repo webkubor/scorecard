@@ -8,6 +8,10 @@ dist
 data/*.sqlite
 data/*.sqlite-*
 
+# 技能使用痕迹 —— 运行时产物，由 skill 机制写入，不进仓库
+skills/**/.last_used
+skills/**/.use_count
+
 # 环境变量（含 SCORECARD_GITHUB_TOKEN，严禁提交）
 .env
 .env.*

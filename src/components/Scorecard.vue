@@ -325,6 +325,37 @@ const radarAxes = computed(() => {
   })
 })
 
+// ---------- 九维明细的展开态 ----------
+//
+// 低分维度自动展开是有意的产品决策（一眼看到最该补的地方），但不能因此变成
+// 「关不掉」：`:open` 是 Vue 的 prop，父级每次 re-render 都会把它写回 DOM，
+// 用户手动收起的状态不在 vnode 里，于是被覆盖 —— 表现就是「进得去出不来」。
+//
+// 解法：一旦用户碰过某个维度，就把「要不要展开」的裁决权从 `:open` 表达式
+// 移交给状态，且**不再渲染 open 属性**（见模板处说明）。
+const dimOpenState = ref(new Map()) // name -> boolean，只存用户明确表过态的维度
+
+/** 用户是否已经手动表过态 —— 表过态就不再让 Vue 写 open 属性 */
+function dimKnown(d) {
+  return dimOpenState.value.has(d.name)
+}
+
+/** 用户表过态就以用户为准；没表过态则低分（<6）且可判定者默认展开 */
+function isDimOpen(d) {
+  if (dimOpenState.value.has(d.name)) return dimOpenState.value.get(d.name)
+  return d.score != null && d.score < 6
+}
+
+function onDimToggle(d, e) {
+  const open = e.target.open
+  // 与当前判定一致 → 是 Vue patch 回写 DOM 触发的 toggle，不是用户手势
+  if (open === isDimOpen(d)) return
+
+  const states = new Map(dimOpenState.value)
+  states.set(d.name, open)
+  dimOpenState.value = states
+}
+
 function bandColor(score) {
   if (score >= 9) return '#7d9d8c' // --score-top
   if (score >= 6) return '#7c94ad' // --score-ok
@@ -921,11 +952,19 @@ onMounted(() => {
           </div>
           <span class="muted">展开查看每项依据</span>
         </div>
+        <!--
+          展开态：`:open` 只在「用户还没表过态」时渲染。
+          用户一旦手动开合过，就改为 null（Vue 不再写这个属性），此后由浏览器
+          自己持有展开状态 —— 否则 Vue 每次 patch 都会把旧的判定值写回去，
+          用户点了收不起来，就是「进得去出不来」那个 bug。
+        -->
         <details
           v-for="d in sortedDims"
           :key="`evidence-${d.name}`"
           class="sc-evidence-item"
-          :open="d.score != null && d.score < 6"
+          :data-dim="d.name"
+          :open="dimKnown(d) ? null : isDimOpen(d)"
+          @toggle="(e) => onDimToggle(d, e)"
         >
           <summary>
             <span>{{ d.name }}</span>
