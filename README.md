@@ -38,6 +38,87 @@ star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆�
 输出不是一个分数了事，而是一份**可执行清单**——每条都带证据和「改完预计 +X 分」，
 还能一键复制成可直接交给 AI 的整改 prompt。
 
+## 「无法核实」不等于「有问题」
+
+这是本项目和多数打分工具最不一样的地方。
+
+打分工具量的是自己看得见的东西。所以公开 API 读不到的——需要 push 权限的 GitHub
+traffic、没配 homepage 的官网、抓超时的 robots——在别的工具里通常被记成 0 分。
+**那是在拿量具的盲区给项目扣分。**
+
+Scorecard 的做法：读不到的判据从分母里剔除，该维度标 `score: null` +「无法核实」，
+报告单列一份「我们看不到的清单」和 `manual` 手动核验项。后果很具体：
+**一个公开仓库跑出来的总分，可以低于它的真实水平，但绝不会高于。**
+
+同样的纪律贯穿全引擎：
+
+- GitHub traffic 需要 push 权限，公共质检永远读不到 → 归入 manual，不扣分
+- tag 超过取样上限时判不准 → 那几分从满分里剔除，而不是记 gap
+- GEO 这一轮模型一次都没调 `web_search` → 「引用率」标无法核实而不是 0%
+  ——**量具没通电和读数低，是两回事**
+
+## 九维度是怎么定出来的
+
+这套维度不是拍脑袋列的。每一维对应一个可外部核实的「陌生人用你的项目会卡在哪」的问题，
+设计上受三条约束：
+
+1. **只判客观项。** 判据限定在 API 拿得到、文件在不在、状态码是多少。
+   主观项（「10 秒看不看得懂」「logo 是否与品牌统一」）判不了可复现，
+   单列在 `skills/project-maturity-audit/`，不进网页引擎。
+2. **三套引擎互不通用。** GitHub 9 维 / npm 7 维 / 网页 9 维 / GEO 4 维，判据各自独立。
+3. **分数可被人推翻。** 每条结论都附证据原文与来源 URL，不同意可以对着证据直接反驳。
+
+计分口径是「拿到多少判据就归一化多少」（`normalizeDim(score, unv)`），
+不是拿满分 10 去减：读不到 README，就把那几条从**分母**里剔除，而不是记 0 分。
+
+## 判据出处：与公开标准的对照
+
+我们不是自创了一套「神秘评分」。每一维的判据都能在下面的公开标准里找到对应条款，
+标准本身不适用时（如 OpenSSF 只管供应链安全）我们明确不套用。
+
+| 维度 | 我们实际看什么 | 对应公开出处 |
+|---|---|---|
+| 门面 | description / topics / homepage / README 首屏图与徽章 | GitHub 仓库元数据；topics 即站内检索分类入口 |
+| 分发 | registry 发布 / README 安装命令 / release 可下载产物 | [OpenSSF Scorecard](https://scorecard.dev/) · Packaging |
+| 发布工程 | 版本 tag / GitHub Release / CHANGELOG / CI 最近一次**已完成**结论 | [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html)、[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)、OpenSSF · CI-Tests |
+| 质量护栏 | test / lint / typecheck 声明、独立测试目录 | [NIST SP 800-218](https://csrc.nist.gov/pubs/sp/800/218/final) · PW（Produce Well-Secured Software） |
+| 社区卫生 | LICENSE / CONTRIBUTING / issue 模板 / issue 积压时效 / 最后提交 | OpenSSF Scorecard · Security-Policy、Maintained |
+| 文档 | 安装 / 快速开始 / API 参考 / FAQ 四件套 | 通用开源文档基线（细则见 SKILL.md ⑥） |
+| 安全 | SECURITY.md / 根目录误提交 .env / .gitignore | OpenSSF Scorecard · Security-Policy |
+| 度量 | star / release 累计下载 / fork / homepage | 采用信号。**star 只当「有人在用」，不当质量证据** |
+| AI 可读性 | AGENTS.md / llms.txt / Copilot 指令 / 官网 robots 是否放行 AI 爬虫 | [llms.txt 规范](https://llmstxt.org/)、[RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) |
+
+**引用清单**
+
+- [OpenSSF Scorecard](https://scorecard.dev/) —— 源码
+  [ossf/scorecard](https://github.com/ossf/scorecard)，检查项说明
+  [docs/checks.md](https://github.com/ossf/scorecard/blob/main/docs/checks.md)
+- [NIST SP 800-218 · Secure Software Development Framework (SSDF) v1.1](https://csrc.nist.gov/pubs/sp/800/218/final)
+  —— 四个 practice group：PO / PS / PW / RV
+- [RFC 9309 · Robots Exclusion Protocol](https://www.rfc-editor.org/rfc/rfc9309.html)
+  （2022-09，Standards Track）—— 我们的 robots 判定直接照它实现：按 `user-agent`
+  分组做大小写不敏感匹配、命中多条规则时合并、**4xx 视为 unavailable，此时爬虫 MAY
+  访问任意资源**，所以站点返回 404 时我们记「默认放行」而不是「屏蔽」
+- [llms.txt 提案](https://llmstxt.org/) —— 第 9 维 `llms.txt` 判据即来自此
+- [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)、
+  [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)
+
+> 引用粒度：上表列到 practice group / 检查项一级是确定的。若要在文案里引用 NIST
+> 的具体 practice ID（如 `PW.4`）或 SLSA 的具体 level，落地前请对照原文核编号 ——
+> 框架改版会动编号，引用错编号比不引用更伤可信度。
+
+## 这个工具不做什么
+
+主动划清边界，比多认领几个维度更能建立信任：
+
+- **不做安全漏洞扫描。** 不跑 SCA、不查 CVE、不做 SAST、不扫 Dangerous Workflow。
+  那是 [OpenSSF Scorecard](https://scorecard.dev/)（Pinned-Dependencies、
+  Token-Permissions、Signed-Releases 等）与 [OWASP SCVS](https://scvs.owasp.org/scvs/) 的范围。
+  我们的安全维只做最表层三项：`SECURITY.md` 是否存在、根目录是否误提交 `.env`、有无 `.gitignore`。
+- **不做 provenance 验证。** 不核验构建产物来源，那需要构建平台侧配合。
+- **不做主观判断。** 判不了可复现的项交给 `skills/project-maturity-audit/`，不进引擎。
+- **GEO 不进排行榜。** 那会把「谁在盯哪些竞品」公开出去。
+
 ## GEO —— 测品牌在 AI 答案里的可见度
 
 前三套测的是「你自己的东西做得好不好」，GEO 测的是**别人问 AI 时你会不会被提到**。
@@ -268,6 +349,7 @@ Restart=always
 | `GET /api/scorecard/report.md?type=...&...` | 同一份报告的 Markdown 版，写给 AI 助手读 |
 | `GET /api/scorecard/compare?type=...&a=X&b=Y` | 两路对比，返回两份报告 + 维度 diff |
 | `GET /api/scorecard/compare.md?type=...&a=X&b=Y` | 对比报告的 Markdown 版 |
+| `GET /api/scorecard/history?target=owner/name` | 同一项目的历次评估与维度变化（改完再跑一次，就能看出动没动） |
 | `GET /api/scorecard/stats` | 累计查询次数与平均分 |
 | `GET /api/scorecard/trending` | 近 24h 热门仓库 Top 10 |
 | `GET /api/scorecard/leaderboard?limit=20` | 参照榜：每个项目取最新一次质检，按分数排 |
@@ -275,8 +357,19 @@ Restart=always
 | `GET /api/geo/trend?brand=X` | 该品牌的历史曲线，live 与 offline 两类分开返回 |
 | `GET /api/geo/providers` | 本机哪几路 GEO key 配好了（不回显 key） |
 | `GET /api/geo/brands` | 品牌清单（出自 Social Hub 的 IP 矩阵），CLI 与前端用它免去手抄问题 |
-| `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（SVG） |
+| `GET /og/scorecard/:owner/:repo` | 1200×630 OG 分享图（**PNG**；`?fmt=svg` 取矢量版） |
+| `GET /skill.md` | Agent skill 全文（带 frontmatter），供 coding agent 直接取用 |
+| `GET /api/skill` | skill 的元信息 + 安装方式 + 端点清单 |
 | `GET /api/health` | 健康检查 |
+
+**给 agent 用**：`/skill.md` 是这套判据的 skill 形态，与网页端同源。装法：
+
+```bash
+curl -sL <站点>/skill.md -o <你的 skills 目录>/project-maturity-audit/SKILL.md
+```
+
+不给「一键安装」是刻意的：各家 agent 的 skills 目录与加载机制都不一样，
+猜错落点比不装更糟。
 
 任何端点加 `fresh=1` 跳过 30 分钟缓存，强制重跑。**GEO 例外**：它每次调用都花真钱，
 且离线 fixture 与真实结果不可比，所以既不吃缓存也不写进别人的缓存 —— 跑一次存一次，

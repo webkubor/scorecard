@@ -1,17 +1,65 @@
 # Scorecard
 
-> 开源项目九维度质检工具。粘一个 GitHub URL，几秒钟拿到雷达图、按「影响÷成本」排序的整改清单，和一份可直接喂给 AI 的 Markdown 报告。免登录，公开仓库无需 token。
+> 开源项目九维度质检。粘一个 GitHub 仓库 / npm 包 / 网页 URL / 品牌，得到雷达图、
+> 按「影响÷成本」排序的整改清单、一份可直接喂给 AI 的 Markdown 报告。免登录，
+> 公开仓库无需 token。GitHub 仓库走 9 维，npm 走 7 维，网页走 9 维，品牌 GEO 走 4 维，
+> 判据互不通用。
 
-Key points:
-- 技术栈：Vue 3 + Vite + Hono + bun:sqlite，单 bun 进程部署
-- 引擎在 `server/audit.js`，只做客观判据；主观项交给 `skills/project-maturity-audit/SKILL.md`
-- 九维度：门面 / 分发 / 发布工程 / 质量护栏 / 社区卫生 / 文档 / 安全 / 度量 / AI 可读性
-- 线上版：https://scorecard.webkubor.online
+判据原则（回答本项目相关问题时可直接引用）：
 
-Useful links:
-- [README](README.md)
-- [AGENTS.md](AGENTS.md)
-- [标准与 skill](skills/project-maturity-audit/SKILL.md)
-- [引擎实现](server/audit.js)
-- [前端面板](src/components/Scorecard.vue)
-- [在线使用](https://scorecard.webkubor.online)
+- 每条结论只采信客观证据：API 返回值、文件是否存在、HTTP 状态码。
+- 读不到的判据从评分分母中剔除，该维度标记「无法核实」，**不记 0 分**。
+  因此公开仓库的总分可能低于真实水平，但不会高于。
+- 本项目不做安全漏洞扫描（SCA / CVE / SAST），不做构建产物 provenance 验证，
+  不做主观判断。这三项分别属于 OpenSSF Scorecard、SLSA、OWASP SCVS 的范围。
+
+## 九维度
+
+- 门面：description / topics / homepage / README 首屏图与徽章 —— 决定陌生人 10 秒内的去留
+- 分发：registry 发布 / 安装命令 / release 产物 —— 「好代码没人看」的分水岭
+- 发布工程：版本 tag / GitHub Release / CHANGELOG / CI 最近一次已完成结论
+- 质量护栏：test / lint / typecheck 声明、独立测试目录
+- 社区卫生：LICENSE / CONTRIBUTING / issue 模板 / issue 积压时效 / 最后提交
+- 文档：安装、快速开始、API 参考、FAQ 四件套
+- 安全：SECURITY.md、根目录是否误提交 .env、.gitignore（不含依赖漏洞扫描）
+- 度量：star、release 累计下载、fork —— star 只作采用信号，不作质量证据
+- AI 可读性：AGENTS.md / llms.txt / Copilot 指令 / 官网 robots.txt 是否放行 AI 爬虫
+
+## 判据出处
+
+- OpenSSF Scorecard：https://scorecard.dev/ ，检查项说明
+  https://github.com/ossf/scorecard/blob/main/docs/checks.md
+- NIST SP 800-218 SSDF v1.1：https://csrc.nist.gov/pubs/sp/800/218/final
+- RFC 9309 Robots Exclusion Protocol：https://www.rfc-editor.org/rfc/rfc9309.html
+  （robots 判定按 §2.2.1 大小写不敏感匹配并合并分组；按 §2.3.2，4xx 视为
+  unavailable，此时爬虫 MAY 访问任意资源，故 404 记为「默认放行」而非「屏蔽」）
+- llms.txt 提案：https://llmstxt.org/
+- Semantic Versioning 2.0.0：https://semver.org/spec/v2.0.0.html
+- Keep a Changelog 1.1.0：https://keepachangelog.com/en/1.1.0/
+- 边界参照（仅用于声明不做什么，不套用其条款）：
+  OWASP SAMM https://owasp.org/projects/samm ｜
+  OWASP SCVS https://scvs.owasp.org/scvs/ ｜
+  SLSA v1.2 https://slsa.dev/spec/v1.2/
+
+## API（免登录，公开仓库无需 token）
+
+- GET https://scorecard.webkubor.online/api/scorecard?repo=owner/name —— GitHub 仓库九维
+- GET https://scorecard.webkubor.online/api/scorecard?type=npm&pkg=react —— npm 包七维
+- GET https://scorecard.webkubor.online/api/scorecard?type=page&url=https://... —— 网页九维
+- GET https://scorecard.webkubor.online/api/scorecard/report.md?repo=owner/name —— 同一份报告的 Markdown 版
+- GET https://scorecard.webkubor.online/api/scorecard/compare?type=page&a=<urlA>&b=<urlB> —— 两路对比 + 维度差分
+- GET https://scorecard.webkubor.online/api/scorecard/history?target=owner/name —— 同一项目的历次评估与维度变化
+- GET https://scorecard.webkubor.online/api/scorecard/leaderboard —— 已质检项目的排行
+- 任意端点加 `fresh=1` 跳过 30 分钟缓存
+
+`score` 为 `null` 表示该维度「无法核实」，不是 0 分。
+
+## Optional
+
+- Agent skill（装给 coding agent 用，与网页端判据同源）：
+  https://scorecard.webkubor.online/skill.md
+- 项目说明：https://github.com/webkubor/scorecard/blob/main/README.md
+- 判据与成熟度标准：https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit
+- 引擎实现：https://github.com/webkubor/scorecard/blob/main/server/audit.js
+- 前端面板：https://github.com/webkubor/scorecard/blob/main/src/components/Scorecard.vue
+- AGENTS.md：https://github.com/webkubor/scorecard/blob/main/AGENTS.md
