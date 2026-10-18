@@ -2,6 +2,60 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## 2.0.0 — 2026-10-18
+
+首个正式版本。此前 0 tag / 0 release —— 而本项目自己的「发布工程」维度明确判这一项，
+所以这个 tag 同时是「用自己工具改自己」的产物。
+
+### 2.0 新增（可用性闭环）
+
+- `feat(landing)` — **场景化入口**：刚开源 / 要发版 / 交给 Agent 改 / 两个项目比。
+  只改「先看哪几维」的排序，**不给场景加权、不给不同分数** —— 同一套判据、同一份报告，
+  否则同一个仓库在两个场景下两个分数，那才是真的不可信
+- `feat(report)` — **复检对照**：报告页显示「距上次 X月X日 +N」与逐维度 from → to。
+  `audits` 表本来就每次 INSERT 留历史，缺的只是出口。没有这条，项目只是一次性玩具：
+  改完回来看的是一个全新分数，跟上次毫无关系
+- `feat(agent)` — **skill 一行可取**：`GET /skill.md`（纯 SKILL.md，带 frontmatter）与
+  `GET /api/skill`（安装方式 + 端点清单）。第一用户是 coding agent，之前却只能
+  git clone 整个仓库再翻目录。刻意不给「一键安装」：各家 agent 的 skills 目录与
+  加载机制都不同，猜错落点比不装更糟
+- `feat(api)` — `/api/scorecard/history`：同一项目的历次评估与维度变化。
+  `score` 为 `null` 的维度不参与相减（「无法核实」不是 0 分），Δ 为 0 的不上列表
+
+### 修复
+
+- `fix(evidence)` — **九维明细「进得去出不来」**。`:open` 是 Vue 的 prop，父级每次
+  re-render 都把判定值写回 DOM，用户手动收起的状态不在 vnode 里，于是被覆盖。
+  改为：用户表过态的维度不再渲染 `open` 属性，展开态交还浏览器持有；
+  「低分自动展开」这条产品决策完好保留。附 7 例回归测试，其中一条静态断言锁住旧写法
+- `fix(og)` — **分享卡改吐 PNG**。原代码注释写着「Twitter/微博/即刻都认
+  image/svg+xml，2024 起标准支持」—— 这条是错的。og:image 规范要求 raster image，
+  主流平台抓取器不渲染 SVG，分享出去是空白图。改走 rsvg-convert，`?fmt=svg` 仍可取矢量
+- `fix(dist)` — **包名让开被占的 `scorecard`**。npm 上 `scorecard` 是 2018 年的无关包
+  （维护者 unmeshvinchurkar），`scorecard-cli` 属 OpenSSF 生态，`scorecard-ai` 属
+  Stripe Scorecard API。照 README 敲 `npx scorecard` 会执行到别人的代码 ——
+  分发链信任问题，不是文案问题。改为 `project-scorecard`（实测未注册）
+
+### 引擎
+
+- `fix(audit)` — npmmirror 镜像 fallback 校验，防止直连 npm 超时被误判成「未发布」
+- `fix(audit)` — 代码托管平台 homepage 不再误当成独立官网去判 robots.txt；
+  支持探测 `.github/ISSUE_TEMPLATE` 目录
+
+### 文档与工程
+
+- `docs(readme)` — 补权威性四章：**「无法核实」不等于「有问题」**（放到最显眼位，
+  这是本项目唯一真正区别于其它打分工具的机制）、九维度的三条设计约束、
+  **判据出处与公开标准的对照表**（OpenSSF / NIST SSDF / SemVer / Keep a Changelog /
+  RFC 9309 / llms.txt，9 条引用 URL 实测 200，RFC 9309 §2.3.2 逐字核过原文）、
+  **这个工具不做什么**（主动划界比多认领维度更能建立信任）
+- `docs(llms.txt)` — 升 v2 结构；根目录与 `public/` 两份此前内容不同，已统一
+- `chore` — 补 `scripts/check-axes.mjs`（四路引擎维度层纪律的静态守卫，
+  拆掉 `check-dimensions.mjs` 里写死的「必须等于 9」）、`scripts/check-syntax.mjs`
+  （零依赖语法 + 红线扫描，替代 linter —— 不为 2 分破掉「零重依赖」的卖点）、
+  CI workflow、SECURITY.md、CONTRIBUTING.md、issue 模板、copilot-instructions.md
+- 自测：用 scorecard 测 scorecard，**6.5 → 8.2**（社区卫生 10 / AI 可读性 10）
+
 ## Unreleased
 
 ### 特性
