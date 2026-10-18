@@ -239,6 +239,8 @@ async function generate() {
       report.value = j.report
       cached.value = !!j.cached
       stage.value = 'report'
+      // 复检历史与主报告并行拉，不阻塞渲染
+      loadHistory(r)
     }, Math.max(0, 1600 - (loadingSteps.value.length * 350)))
   } catch (err) {
     errorMsg.value = err.message
@@ -249,6 +251,52 @@ async function generate() {
     }
   }
 }
+
+// ---------- 复检历史 ----------
+//
+// 为什么要有它：整改清单告诉用户「该改什么」，但没有下一次对照，他就无法证明
+// 「我改了有用」。这个项目最容易的失败方式就是变成一次性玩具 —— 算完就走，
+// 再也不回来。history 接口给的是同一项目的历次评估，让「改完再跑一次」有意义。
+const historyData = ref(null)
+const historyLoading = ref(false)
+
+async function loadHistory(target) {
+  historyLoading.value = true
+  historyData.value = null
+  try {
+    const res = await fetch(`/api/scorecard/history?target=${encodeURIComponent(target)}`, {
+      cache: 'no-store',
+    })
+    const j = await res.json().catch(() => ({}))
+    // 404 / 无历史都算正常情况，不当错误抛给用户看
+    if (res.ok && j && j.points) historyData.value = j
+  } catch {
+    /* 拿不到历史不该影响主流程 */
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/** 有过两次以上评估才谈得上「变化」 */
+const historyDelta = computed(() => {
+  const h = historyData.value
+  if (!h || h.runs < 2 || h.totalDelta == null) return null
+  return h.totalDelta
+})
+
+const historyChanges = computed(() => {
+  const h = historyData.value
+  if (!h || !Array.isArray(h.changes) || !h.changes.length) return []
+  return h.changes.slice(0, 5)
+})
+
+function fmtDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getMonth() + 1}月${d.getDate()}日`
+}
+
 
 function reset() {
   stage.value = 'idle'
@@ -998,6 +1046,36 @@ onMounted(() => {
           <p v-else class="muted">所有维度都 ≥ 6，棒。</p>
         </div>
       </div>
+
+      <!-- 复检对照：同一个项目上次 vs 这次。第一次看没有这一块（没有「上次」）。 -->
+      <section
+        v-if="historyDelta !== null || historyChanges.length"
+        class="sc-recheck"
+        aria-labelledby="sc-recheck-title"
+      >
+        <div class="sc-findings-head">
+          <div>
+            <p class="sc-section-kicker">复检对照</p>
+            <h3 id="sc-recheck-title">
+              距上次
+              <template v-if="historyData?.previous">{{ fmtDate(historyData.previous.ts) }}</template>
+              <span
+                v-if="historyDelta !== null"
+                class="sc-recheck-delta"
+                :class="historyDelta > 0 ? 'up' : historyDelta < 0 ? 'down' : 'flat'"
+              >{{ historyDelta > 0 ? '+' : '' }}{{ historyDelta }}</span>
+            </h3>
+          </div>
+          <span class="muted">改完再跑一次，就能看到这里动起来</span>
+        </div>
+        <ul v-if="historyChanges.length" class="sc-recheck-list">
+          <li v-for="c in historyChanges" :key="c.key" class="sc-recheck-item">
+            <span class="sc-recheck-dim">{{ c.name }}</span>
+            <span class="sc-recheck-nums">{{ c.from }} → {{ c.to }}</span>
+            <span class="sc-recheck-delta" :class="c.delta > 0 ? 'up' : 'down'">{{ c.delta > 0 ? '+' : '' }}{{ c.delta }}</span>
+          </li>
+        </ul>
+      </section>
 
       <!-- 结果不能只存在于 Markdown 里。先让人看清要改什么，再决定要不要交给 AI。 -->
       <section class="sc-findings" aria-labelledby="sc-findings-title">
@@ -1763,6 +1841,39 @@ onMounted(() => {
   gap: 16px;
   margin-bottom: 12px;
 }
+
+/* 复检对照：涨用绿、跌用红，但两色都取自既有变量，不新增色相。 */
+.sc-recheck {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.sc-recheck-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sc-recheck-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+.sc-recheck-dim { min-width: 76px; color: var(--text); }
+.sc-recheck-nums { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sc-recheck-delta {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sc-recheck-delta.up { color: var(--success); }
+.sc-recheck-delta.down { color: #b08585; }
+.sc-recheck-delta.flat { color: var(--text-dim); }
 .sc-section-kicker {
   margin: 0 0 3px;
   color: var(--text-dim);
