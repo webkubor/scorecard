@@ -836,6 +836,65 @@ app.get('/api/ops', (c) => {
 // 健康检查 —— 部署烟雾测试用，不碰 GitHub
 app.get('/api/health', (c) => c.json({ ok: true, hasToken: !!GITHUB_TOKEN, dist: HAS_DIST }))
 
+// ---------- Agent 接入面 ----------
+//
+// 这个项目的第一用户是 coding agent，不是浏览器。所以 skill 必须能用一行取到，
+// 而不是逼对方 git clone 一个仓库再翻目录。
+//
+// 三种取法，按 agent 的习惯分：
+//   GET /skill.md        纯 SKILL.md（带 YAML frontmatter），可以直接存成 .md
+//   GET /api/skill       JSON，带安装方式与 API 清单，agent 读完就知道怎么调本服务
+//   GET /llms.txt        已经在下面注册了（第九维的判据之一，Scorecard 自己要达标）
+//
+// 刻意不提供「一键安装」：往 ~/.claude/skills/ 写文件这件事，各家 agent 的目录
+// 和加载机制都不一样，猜错比不装更糟。这里只给内容和用法，装不装、装哪，由 agent 自己的规矩决定。
+const SKILL_PATH = join(ROOT, 'skills/project-maturity-audit/SKILL.md')
+
+app.get('/skill.md', async (c) => {
+  try {
+    const body = await readFile(SKILL_PATH, 'utf8')
+    c.header('Content-Type', 'text/markdown; charset=utf-8')
+    c.header('Cache-Control', 'public, max-age=3600')
+    return c.body(body)
+  } catch (e) {
+    return c.text('skill 读取失败：' + e.message, 500)
+  }
+})
+
+app.get('/api/skill', async (c) => {
+  try {
+    const body = await readFile(SKILL_PATH, 'utf8')
+    return c.json({
+      name: 'project-maturity-audit',
+      description:
+        '开源项目成熟度体检 —— 与本服务网页端九维判据同源，可直接读文件装成 skill',
+      install: {
+        // 各家 agent 的 skill 目录不一样，所以给内容 + 落点建议，不代写文件
+        curl: `curl -sL ${SITE_URL}/skill.md -o <你的-skills目录>/project-maturity-audit/SKILL.md`,
+        npx: 'npx -y github:webkubor/scorecard <target>',
+        note: '前端整站是 Vue SPA，抓不到正文；要看内容请走上面的 skill.md 与 report.md',
+      },
+      endpoints: {
+        report: `/api/scorecard?repo=owner/name`,
+        reportMd: `/api/scorecard/report.md?repo=owner/name`,
+        npm: `/api/scorecard?type=npm&pkg=<name>`,
+        page: `/api/scorecard?type=page&url=https://...`,
+        compare: `/api/scorecard/compare?type=page&a=<urlA>&b=<urlB>`,
+        history: `/api/scorecard/history?target=owner/name`,
+        geo: `/api/scorecard?type=geo&brand=<name>`,
+      },
+      notes: [
+        '免登录；公开仓库走 GitHub 匿名 API（60 次/小时/IP），私有仓库需要服务端配 token',
+        'score 为 null 表示该维度「无法核实」，不是 0 分；报告与历史接口都按这个口径处理',
+        '三路引擎（github 9 维 / npm 7 维 / page 9 维）判据互不通用，不给统一总分',
+      ],
+      bytes: Buffer.byteLength(body),
+    })
+  } catch (e) {
+    return c.json({ error: 'skill 读取失败：' + e.message }, 500)
+  }
+})
+
 // ---------- static + SPA fallback（注册在最后，让 /api/* 优先） ----------
 if (HAS_DIST) {
   app.use('/assets/*', serveStatic({ root: DIST_DIR, headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }))

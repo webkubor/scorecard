@@ -524,6 +524,26 @@ async function copyShareLink() {
   setTimeout(() => (shareMsg.value = ''), 2200)
 }
 
+// ---------- Agent 接入 ----------
+//
+// 第一用户是 coding agent，所以「让 agent 自己会用」的入口必须显眼。
+// 但刻意不给「一键安装」按钮：各家 agent 的 skills 目录与加载机制都不一样，
+// 往磁盘写文件的猜测一旦错了，比不装更糟。这里给命令、让用户自己决定。
+const siteUrl = computed(() => (location.protocol === 'https:' ? 'https://' : '') + SITE_HOST)
+const skillInstallCmd = computed(() => `curl -sL ${siteUrl.value}/skill.md -o <skills目录>/project-maturity-audit/SKILL.md`)
+const skillCopied = ref(false)
+
+async function copySkillCmd() {
+  try {
+    await navigator.clipboard.writeText(skillInstallCmd.value)
+    skillCopied.value = true
+    setTimeout(() => (skillCopied.value = false), 1800)
+  } catch {
+    shareMsg.value = '❌ 复制失败，请手动选中上面的命令'
+    setTimeout(() => (shareMsg.value = ''), 2400)
+  }
+}
+
 // 复制 Markdown 报告 —— 主要的分享形态。
 //
 // 服务端 /api/scorecard/report.md 直接吐一份写给 AI 助手看的报告：
@@ -1157,6 +1177,28 @@ onMounted(() => {
         <button class="btn ghost" @click="reset">换一个</button>
         <span v-if="shareMsg" class="sc-share-msg">{{ shareMsg }}</span>
       </div>
+
+      <!-- Agent 接入：这是给 agent 的入口，不是给人看的说明。
+           第一用户是 coding agent，所以「怎么让它自己会用」必须比「怎么让人看懂」更显眼。 -->
+      <section class="sc-agent-entry" aria-labelledby="sc-agent-title">
+        <div class="sc-agent-head">
+          <p class="sc-section-kicker">Agent 接入</p>
+          <h3 id="sc-agent-title">让 coding agent 自己会用这套判据</h3>
+          <p class="sc-agent-desc">
+            同一套九维判据另有一份 skill 形态，agent 装上之后就能按它审查仓库 ——
+            和网页端分数同源，不会两套标准。
+          </p>
+        </div>
+        <div class="sc-agent-cmd">
+          <code>{{ skillInstallCmd }}</code>
+          <button class="btn ghost sc-agent-copy" @click="copySkillCmd">
+            <Icon name="copy" :size="13" /> {{ skillCopied ? '已复制' : '复制' }}
+          </button>
+        </div>
+        <p class="sc-agent-foot muted">
+          也可以直接给 agent 这个地址，让它自己取：<code>{{ siteUrl }}/skill.md</code>
+        </p>
+      </section>
     </div>
   </section>
 </template>
@@ -1988,6 +2030,50 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
+}
+
+/* Agent 接入区：放在操作条之后。代码块等宽字体 + 可横向滚动，
+   窄屏时不换行也不撑破布局。 */
+.sc-agent-entry {
+  margin-top: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.sc-agent-head { margin-bottom: 10px; }
+.sc-agent-desc {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.sc-agent-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.sc-agent-cmd code {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.sc-agent-copy { flex: none; }
+.sc-agent-foot {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.sc-agent-foot code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-dim);
 }
 .sc-share-msg {
   font-size: 12px;
