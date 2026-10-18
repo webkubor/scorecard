@@ -30,6 +30,9 @@ jobs:
       - name: 构建前端
         run: bun run build
 
+      - name: 语法与红线（零依赖 lint 替代）
+        run: bun run check:syntax
+
       - name: 维度一致性（GitHub 引擎 ↔ skill）
         run: bun run check:dimensions
 

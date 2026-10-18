@@ -18,8 +18,9 @@
     "check:dimensions": "node scripts/check-dimensions.mjs",
     "audit": "node bin/scorecard.mjs",
     "check:axes": "node scripts/check-axes.mjs --strict",
-    "check": "bun run check:dimensions && bun run check:axes && bun test",
-    "test": "bun test"
+    "check": "bun run check:syntax && bun run check:dimensions && bun run check:axes && bun test",
+    "test": "bun test",
+    "check:syntax": "node scripts/check-syntax.mjs --strict"
   },
   "dependencies": {
     "dayjs": "^1.11.23",

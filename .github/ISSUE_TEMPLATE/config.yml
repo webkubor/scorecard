@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/webkubor/scorecard/security/advisories/new
+    about: 安全问题请走私密报告通道，不要开公开 issue
+  - name: 判据与评分标准说明
+    url: https://github.com/webkubor/scorecard/blob/main/README.md#判据出处与公开标准的对照
+    about: 先看这一维的判据对应哪个公开标准，可能你的疑问已经有答案
