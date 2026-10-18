@@ -1,0 +1,40 @@
+name: check
+
+# 这个项目的门禁分三层，全部在这里跑：
+#   1. 维度一致性 —— GitHub 引擎与 skill 必须说同一套话
+#   2. 四路引擎的维度层纪律 —— 每条结论要有证据、查不到要走 unverifiable 而不是扣分
+#   3. 单元测试
+#
+# 为什么 CI 必须有：本项目自己的「发布工程」维度明确判「有没有 CI 运行记录」。
+# 没有 CI 就是自己都没做到自己说的那条，分数低不是别人误判。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      - name: 构建前端
+        run: bun run build
+
+      - name: 维度一致性（GitHub 引擎 ↔ skill）
+        run: bun run check:dimensions
+
+      - name: 四路引擎维度层纪律
+        run: bun run check:axes
+
+      - name: 单元测试
+        run: bun test
