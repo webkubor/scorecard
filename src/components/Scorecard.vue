@@ -31,6 +31,62 @@ const BRAND_MARK = 'SCORECARD' // 视觉标记用大写
 const BRAND_SLUG = 'scorecard' // 导出文件名用
 const SITE_HOST = 'scorecard.webkubor.online'
 
+// ---------- 场景（用户带着什么问题来的） ----------
+//
+// 之前落地页只有一个输入框，让用户自己判断「我该拿它干嘛」。实测这是最大的
+// 可用性断点：输入框只说了工具能干什么，没说用户此刻该用它干什么。
+//
+// 这里不新增四个产品，只把「你是谁、你要干什么」显式化：选中场景后
+//   · placeholder 换成该场景的典型输入
+//   · 提示换成该场景真正关心的那几维
+// 分数还是同一套分数、同一份报告 —— 场景不改判据，只改「先看哪儿」。
+//
+// priority 是给报告用的排序提示，不是维度权重：不同场景下整改清单的先后
+// 应当不同（发版关心发布工程，开源关心门面），但分数口径绝不因场景而变 ——
+// 否则同一个仓库在两个场景下分数不同，那才是真的不可信。
+const SCENARIOS = [
+  {
+    key: 'just-published',
+    label: '刚开源',
+    hint: '第一次公开一个项目，先看看别人第一眼会看到什么',
+    placeholder: 'github.com/owner/repo',
+    focus: ['门面', '文档', 'AI 可读性'],
+  },
+  {
+    key: 'before-release',
+    label: '要发版',
+    hint: '发版前补齐门面与工程化，该有的仪式不能少',
+    placeholder: 'github.com/owner/repo',
+    focus: ['发布工程', '质量护栏', '分发'],
+  },
+  {
+    key: 'agent-handoff',
+    label: '交给 Agent 改',
+    hint: '让 coding agent 先看清现状，再决定动哪里',
+    placeholder: 'github.com/owner/repo',
+    focus: ['AI 可读性', '文档', '质量护栏'],
+  },
+  {
+    key: 'compare',
+    label: '两个项目比',
+    hint: '哪个更值得抄，或者你和他差在哪',
+    placeholder: 'github.com/owner/repo',
+    focus: [],
+  },
+]
+
+const scenario = ref('just-published')
+const activeScenario = computed(() => SCENARIOS.find((s) => s.key === scenario.value) || SCENARIOS[0])
+
+/** 该场景下最该先看的维度（按 focus 顺序，其余按原顺序补齐） */
+const scenarioFocusDims = computed(() => {
+  const focus = activeScenario.value.focus
+  if (!focus.length) return []
+  const all = sortedDims.value
+  const picked = focus.map((name) => all.find((d) => d.name === name)).filter(Boolean)
+  return picked
+})
+
 // ---------- state machine ----------
 const stage = ref('idle') // idle | loading | report | error
 const mode = ref('single') // single | compare —— 顶部 tab 控制
@@ -521,18 +577,36 @@ onMounted(() => {
         <Icon name="arrow-right" :size="15" />
       </button>
 
+      <!-- 场景选择：先说「你是谁、要干嘛」，再说输入框。
+           不新增功能，只是把同一套判据按用户当下的问题重排先后。 -->
+      <div class="sc-scenarios" role="radiogroup" aria-label="选择你的场景">
+        <button
+          v-for="s in SCENARIOS"
+          :key="s.key"
+          class="sc-scenario"
+          :class="{ active: scenario === s.key }"
+          type="button"
+          role="radio"
+          :aria-checked="scenario === s.key"
+          @click="scenario = s.key; if (s.key === 'compare') mode = 'compare'; else if (mode === 'compare') mode = 'single'"
+        >
+          <span class="sc-scenario-label">{{ s.label }}</span>
+          <span class="sc-scenario-hint">{{ s.hint }}</span>
+        </button>
+      </div>
+
       <!-- 模式 tab：单目标 vs 对比 -->
       <div class="sc-mode-tabs">
         <button
           class="sc-mode-tab"
           :class="{ active: mode === 'single' }"
-          @click="mode = 'single'; resetCompare()"
+          @click="mode = 'single'; scenario = 'just-published'; resetCompare()"
           type="button"
         >单目标质检</button>
         <button
           class="sc-mode-tab"
           :class="{ active: mode === 'compare' }"
-          @click="mode = 'compare'; input = ''"
+          @click="mode = 'compare'; scenario = 'compare'; input = ''"
           type="button"
         >对比</button>
         <span class="sc-mode-hint" v-if="mode === 'compare'">A vs B，比如测试 env ↔ 线上 env</span>
@@ -549,8 +623,7 @@ onMounted(() => {
             spellcheck="false"
             autocomplete="off"
             @keydown.enter.prevent="generate"
-          />
-          <button class="btn primary sc-go" :disabled="!canSubmit" type="submit">
+          />          <button class="btn primary sc-go" :disabled="!canSubmit" type="submit">
             <Icon name="search" :size="14" />
             <span>查一下</span>
           </button>
@@ -1094,6 +1167,54 @@ onMounted(() => {
   color: var(--text-dim);
   margin-left: 6px;
 }
+
+/* 场景卡：四选一。两行——标题 + 场景化提示。
+   选中态用左侧竖条而不是整块填充：四个卡片里只有一条竖线亮着，
+   视线扫过去先落在「当前是哪一个」，而不是被四块底色搅乱。 */
+.sc-scenarios {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.sc-scenario {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left: 2px solid transparent;
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sc-scenario:hover {
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+.sc-scenario.active {
+  border-left-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+.sc-scenario:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sc-scenario-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sc-scenario-hint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.sc-scenario.active .sc-scenario-hint { color: var(--text-dim); }
+
 
 .sc-form-compare .sc-compare-pair {
   display: grid;
