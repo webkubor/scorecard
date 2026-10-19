@@ -627,12 +627,16 @@ onMounted(() => {
         <Icon name="brand" :size="14" /> {{ BRAND_MARK }}
       </div>
       <h1 class="sc-h1">
-        你的开源项目<br>
-        <span class="grad">几秒钟</span>就能拿到 9 维度质检报告
+        做决定之前<br>
+        <span class="grad">先跑一次体检</span>
       </h1>
       <p class="sc-sub">
-        粘一个 GitHub URL —— 九维度雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
-        免登录，公开仓库无 token 也能跑。
+        粘一个 GitHub 仓库 / npm 包 / 网页 URL —— 九维度雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
+        读不到的判据标「无法核实」，不猜分。免登录，公开仓库无 token 也能跑。
+      </p>
+      <p class="sc-sub sc-sub-diff">
+        名字与 <a href="https://scorecard.dev/" target="_blank" rel="noopener">OpenSSF Scorecard</a> 相近，
+        做的不是一件事 —— 那个管供应链安全，这个管项目成熟度。
       </p>
 
       <!-- GEO 入口：独立路由，不占上面的单/对比两个 tab —— 它的表单形态完全不同 -->
@@ -1243,6 +1247,20 @@ onMounted(() => {
   margin: 0 0 28px;
   line-height: 1.6;
 }
+/* 与 OpenSSF 的关系说明：放在副标题下方，小一号、弱化 ——
+   回答一个必然会来的疑问，但不该抢主标题的注意力。 */
+.sc-sub-diff {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: -16px 0 28px;
+  max-width: 46em;
+}
+.sc-sub-diff a {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sc-sub-diff a:hover { color: var(--accent); }
 .sc-form { margin-bottom: 18px; }
 
 /* 模式 tabs（单目标 vs 对比） */

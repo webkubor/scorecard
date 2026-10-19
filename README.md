@@ -5,11 +5,29 @@
 [![online status](https://img.shields.io/website-up-down-green-red/https/scorecard.webkubor.online.svg)](https://scorecard.webkubor.online)
 [![issues](https://img.shields.io/github/issues/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/issues)
 
-> 粘一个 **GitHub URL / npm 包名 / 网页 URL**，几秒钟拿到按目标类型定制的质检报告：
-> 雷达图、按「影响÷成本」排序的整改清单，一份可直接粘给 AI 的 Markdown 报告。
-> 还能**横切对比两个目标**（测试 env ↔ 线上 env、你的包 ↔ 友商），把"差在哪"直接打开看。
-> 另外新开了 **GEO**：测你的品牌在 AI 答案里出不出现（问 ChatGPT「XX 类产品有哪些」时你在不在里面）。
+> **做决定之前，先跑一次体检。**
+>
+> 粘一个 **GitHub 仓库 / npm 包名 / 网页 URL**，几秒钟拿到一份体检报告：
+> 九维度雷达图、按「影响÷成本」排序的整改清单，一份可直接粘给 AI 的 Markdown 报告。
 > 免登录，公开仓库无需 token。
+
+**它和 [OpenSSF Scorecard](https://scorecard.dev/) 是什么关系？** 名字撞了，做的不是一件事。
+OpenSSF 那个管**供应链安全** —— 依赖有没有钉版本、token 权限多大、发包有没有签名，
+面向企业安全审计。本项目管**项目成熟度** —— 门面试不试人、文档齐不齐、
+发布工程规不规范，面向「我这个仓拿出手吗、能不能交给别人用」。
+两个方向互补，不重叠。
+
+四套引擎（GitHub 9 维 / npm 7 维 / 网页 9 维 / GEO 4 维）**判据互不通用** ——
+把 npm 包的「周下载」塞进 GitHub 仓的「star 增速」位会系统性误判。
+
+**四个入口，对应四种「我该拿它干嘛」**：
+
+| 我要做的事 | 入口 | 它会告诉我 |
+|---|---|---|
+| 刚开源，不知道差在哪 | <https://scorecard.webkubor.online> | 别人第一眼会看到什么、文档够不够用 |
+| 要发版，想补齐门面 | 同上 | tag / Release / CHANGELOG / CI 少了哪套仪式 |
+| 交给 coding agent 改 | [`/skill.md`](https://scorecard.webkubor.online/skill.md) | 让 agent 按同一套判据先看清现状 |
+| 一堆仓库，先修哪个 | `/api/scorecard/compare` | 逐维度差分，哪边领先、差在哪 |
 
 **线上版**：<https://scorecard.webkubor.online>
 
