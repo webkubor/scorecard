@@ -26,6 +26,14 @@ const STRICT = process.argv.includes('--strict')
 const audit = readFileSync(join(ROOT, 'server/audit.js'), 'utf8')
 const skill = readFileSync(join(ROOT, 'skills/project-maturity-audit/SKILL.md'), 'utf8')
 
+// 门面新增的元数据判据也需在 skill 中明确，避免仅维度名一致、判据却漂移。
+for (const criterion of ['description', 'topics', '关键词', '人工']) {
+  if (!skill.includes(criterion)) {
+    console.error(`❌ skill 缺少元数据判据说明：${criterion}`)
+    process.exit(1)
+  }
+}
+
 // 引擎里的维度是数据，直接取；顺序就是面板上的顺序
 const engine = [...audit.matchAll(/key: '([a-z]+)', name: '([^']+)'/g)]
   .map((m) => ({ key: m[1], name: m[2] }))

@@ -36,7 +36,7 @@ version: 1.0.0
 
 **通用检查：**
 - README：首屏 10 秒内能否明白"这是什么、给谁用、值不值得装"？
-- `gh api repos/<r> --jq '{description, topics, homepage}'`：description 一句话卖点；topics ≥6 个精准词；homepage 已配置。
+- `gh api repos/<r> --jq '{description, topics, homepage}'`：description 有内容并同时说明用途与目标用户/场景；topics 建议 ≥6 个，且至少有一个 topic 与 description 的英文关键词可对应（单复数归一化）；description 未命中用途/对象词表、topics 无英文关键词对应时，各自 1 分标「无法核实」交人工判断，不能把词表盲区当语义不合格；不按特定行业硬编码必需 topic，也不凭 topic 名猜过期。门面计分：description 存在 +1、用途/用户语义覆盖 +1、topics ≥6 +1、topics 与 description 有可核实对应 +1；主页 +1，其余沿用引擎现有判据。
 - 徽章：CI 状态、license、版本号——有没有、是不是活的。**数量 4–6 个为宜，每个必须传递真实可信度信号（版本/license/CI/下载量）；坏徽章（"not identifiable"、CI failing、404）比没有更伤门面，装饰性徽章（made-with-love 之类）一律不加。**
 
 **Logo / Social Preview 检查（必须实际查文件，不只看 API）：**

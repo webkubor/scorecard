@@ -93,6 +93,62 @@ function excludeInapplicableDimensions(dims, type) {
 const clamp = (n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10))
 
 /**
+ * 门面描述的两个通用信号。
+ *
+ * 判据刻意只认「有没有把用途和受众说清楚」，不认任何行业词 ——
+ * 把 secret-manager 这类词写死成全局必需项，等于逼每个项目都套密钥管理的词表；
+ * 主题分类是各品类自己的事，这里只判描述是否可读懂、能被搜到。
+ *
+ * 使用中英文用途/对象词作为保守的词面信号，不等价于语义理解。
+ * 词表会有盲区；报告需让用户核对，并保留人工判据。
+ */
+const words = (list) => new RegExp(`\\b(?:${list})(?:s|ing|ment|er)?\\b`, 'i')
+
+const DESCRIPTION_PURPOSE = words([
+  'for', 'to', 'manage', 'builder', 'build', 'creator', 'create', 'creation', 'tool', 'platform',
+  'library', 'framework', 'service', 'cli', 'app', 'protect', 'automation', 'automate', 'help',
+  'enable', 'encrypt', 'encryption', 'store', 'storage', 'deploy', 'deployment', 'run', 'sync',
+  'convert', 'monitor', 'secure', 'securing', 'simplify', 'simplifies', 'provide', 'turn', 'translate',
+  'parse', 'parsing', 'generate', 'search', 'scan', 'watch', 'notify', 'publish', 'export',
+  'import', 'backup', 'migrate', 'optimize', 'render', 'analyze', 'test'
+].join('|'))
+
+const DESCRIPTION_AUDIENCE = words([
+  'developer', 'engineer', 'user', 'operator', 'organization', 'company', 'team', 'agent',
+  'project', 'business', 'workflow', 'machine', 'device', 'server', 'file', 'database',
+  'package', 'api', 'key', 'credential', 'password', 'secret', 'certificate', 'configuration',
+  'environment', 'code', 'browser',
+  'flashcard', 'paragraph', 'document', 'image', 'video', 'note', 'email', 'test', 'markdown',
+  'pdf', 'table', 'application', 'student', 'teacher', 'writer', 'photographer', 'musician', 'dotenv'
+].join('|'))
+
+const DESCRIPTION_PURPOSE_ZH = /管理|用于|帮助|工具|平台|服务|应用|框架|库|保护|自动化|构建|创建|面向|支持|提供|加密|存储|部署|运行|同步|转换|监控|简化|翻成|转为|转成|把.{0,8}变成/
+const DESCRIPTION_AUDIENCE_ZH = /开发者|团队|用户|企业|组织|运维|工程师|智能体|工作流|项目|密钥|证书|配置|环境|数据库|文件|浏览器|程序包|接口|凭证|密码|代码|服务器|设备|卡片|段落|文档|笔记|邮件|图片|视频|表格|学生|老师|写作者|摄影师/
+
+/** 描述是否同时交代用途与受众/场景；只检查通用信号，不要求特定行业词。 */
+export function assessDescription(description) {
+  const text = String(description || '').trim()
+  if (!text) return { present: false, purpose: false, audience: false, pass: false }
+  const purpose = DESCRIPTION_PURPOSE.test(text) || DESCRIPTION_PURPOSE_ZH.test(text)
+  const audience = DESCRIPTION_AUDIENCE.test(text) || DESCRIPTION_AUDIENCE_ZH.test(text)
+  return { present: true, purpose, audience, pass: purpose && audience }
+}
+
+/** Topics 有一定数量且覆盖可从描述中观察到的词类；不按仓库类型硬编码必需词。 */
+export function assessTopics(topics, description = '') {
+  const normalized = [...new Set((Array.isArray(topics) ? topics : []).map((t) => String(t).trim().toLowerCase()).filter(Boolean))]
+  const descWords = String(description || '').toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4)
+  const descTerms = descWords.filter((w) => !new Set(['open', 'source', 'tool', 'tools', 'with', 'from', 'that', 'this', 'your', 'into', 'using', 'based', 'help', 'helps', 'make', 'made', 'fast', 'easy', 'secure']).has(w))
+  const stem = (word) => word.replace(/s$/, '')
+  const matching = normalized.filter((topic) => topic.split('-').some((word) => descTerms.some((term) => stem(term) === stem(word))))
+  const coverage = normalized.length ? matching.length / normalized.length : 0
+  const enough = normalized.length >= 6
+  const comparable = /[a-z]{4,}/i.test(String(description || '')) && descTerms.length > 0
+  const relevant = normalized.length > 0 && matching.length >= 1
+  return { count: normalized.length, enough, matching, coverage, comparable, relevant, pass: enough && relevant }
+}
+
+/**
  * 2025 年起各大 AI 服务商陆续公开爬虫 UA，站方在 robots.txt 里用 Disallow
  * 声明「别把我的内容抓去喂模型」。这里做保守解析：
  *   · 按 User-agent 分组，组内有非空 Disallow 即视为屏蔽该 UA；
@@ -312,11 +368,18 @@ export async function auditProject({ owner, repo, token }) {
   {
     const ev = [], gaps = []
     const topics = r.topics || []
-    r.description ? ev.push(`description: "${r.description.slice(0, 50)}"`) : gaps.push('description 空着 —— 搜索结果里就是一片空白')
-    topics.length >= 6 ? ev.push(`topics ${topics.length} 个`) : gaps.push(`topics 只有 ${topics.length} 个（应 ≥6，这是被搜到的主要途径）`)
+    const descriptionCheck = assessDescription(r.description)
+    const topicCheck = assessTopics(topics, r.description)
+    descriptionCheck.present ? ev.push(`description: "${String(r.description).trim().slice(0, 50)}"`) : gaps.push('description 空着 —— 搜索结果里就是一片空白')
+    if (descriptionCheck.present && descriptionCheck.pass) ev.push('description 检测到用途与对象词面信号（语义是否清楚仍需人工核实）')
+    topics.length >= 6 ? ev.push(`topics ${topics.length} 个`) : gaps.push(`topics 只有 ${topics.length} 个（建议 ≥6，作为 GitHub 分类与发现信号）`)
+    if (topics.length && topicCheck.comparable) {
+      if (topicCheck.relevant) ev.push(`topics 与 description 有关键词对应：${topicCheck.matching.slice(0, 5).join(', ')}`)
+      // 没有词面交集不能推出语义无关（同义词、缩写都可能造成盲区）。
+    }
     r.homepage ? ev.push(`homepage: ${r.homepage}`) : gaps.push('homepage 未配置')
 
-    const manual = ['README 首屏 10 秒清晰度', 'Social Preview 是否已在 Settings 上传 2:1 图', 'logo 是否 1:1 透明底']
+    const manual = ['README 首屏 10 秒清晰度', 'Social Preview 是否已在 Settings 上传 2:1 图', 'logo 是否 1:1 透明底', '中英文品类词是否覆盖目标用户搜索用语（词面信号不能代替语义理解）', 'topics 是否过期（需核对当前实现/可选后端，不能只凭 topic 名或文件缺失推断）']
     let score = 2
     let unv = 0
 
@@ -342,8 +405,18 @@ export async function auditProject({ owner, repo, token }) {
       manual.push('README 取不到，徽章与配图判不了 —— 这 3 分已从满分中剔除')
     }
 
-    if (r.description) score += 2
-    if (topics.length >= 6) score += 2
+    if (descriptionCheck.present && !descriptionCheck.pass) {
+      unv += 1
+      manual.push('description 未检测到完整用途/对象词面信号，需人工核实（可能是词表盲区）—— 这 1 分已从满分中剔除')
+    }
+    if (topics.length && !topicCheck.relevant) {
+      unv += 1
+      manual.push('topics 未检测到与 description 的关键词对应，需人工核实类目相关性（含跨语言/同义词盲区）—— 这 1 分已从满分中剔除')
+    }
+    if (descriptionCheck.present) score += 1
+    if (descriptionCheck.pass) score += 1
+    if (topics.length >= 6) score += 1
+    if (topicCheck.relevant) score += 1
     if (r.homepage) score += 1
     if (badges >= 4 && badges <= 6) score += 1.5
     if (imgs > 0) score += 1.5
