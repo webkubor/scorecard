@@ -1,5 +1,46 @@
 import { test, expect } from 'bun:test'
-import { auditProject, assessDescription, assessTopics } from '../server/audit.js'
+import { auditProject, assessDescription, assessTopics, gh } from '../server/audit.js'
+
+test('GitHub API TLS 证书验证错误只重试一次并保留请求参数', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  let attempts = 0
+  globalThis.fetch = async (url, options) => {
+    calls.push([url, options])
+    attempts++
+    if (attempts === 1) {
+      const error = new TypeError('mock certificate failure')
+      error.code = 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR'
+      throw error
+    }
+    return new Response(JSON.stringify({ ok: true }))
+  }
+  try {
+    const result = await gh('/repos/example/project', 'fixture-token')
+    expect(result.ok).toBe(true)
+    expect(attempts).toBe(2)
+    expect(calls[0]).toEqual(calls[1])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('GitHub API TLS 连续失败给出脱敏错误；其他异常不重试', async () => {
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = async () => {
+    attempts++
+    const error = new TypeError('mock certificate failure')
+    error.code = 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR'
+    throw error
+  }
+  try {
+    await expect(gh('/repos/example/project')).rejects.toThrow('GitHub API 请求失败（TLS 证书验证）')
+    expect(attempts).toBe(2)
+    attempts = 0
+    globalThis.fetch = async () => { attempts++; throw new TypeError('different failure') }
+    await expect(gh('/repos/example/project')).rejects.toThrow('different failure')
+    expect(attempts).toBe(1)
+  } finally { globalThis.fetch = originalFetch }
+})
 
 test('description 夹具：同时有用途与项目/用户类目词才通过', () => {
   expect(assessDescription(null).pass).toBe(false)

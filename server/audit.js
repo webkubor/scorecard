@@ -43,14 +43,30 @@ export const SCORE_BANDS = [
 
 export const bandOf = (score) => SCORE_BANDS.find((b) => score >= b.min) || SCORE_BANDS[SCORE_BANDS.length - 1]
 
-async function gh(path, token, { raw = false } = {}) {
-  const res = await fetch(`${GH}${path}`, {
+export async function gh(path, token, { raw = false } = {}) {
+  const url = `${GH}${path}`
+  const options = {
     headers: {
       Accept: raw ? 'application/vnd.github.raw' : 'application/vnd.github+json',
       'User-Agent': 'github-accounts-manager',
       ...(token ? { Authorization: `token ${token}` } : {}),
     },
-  })
+  }
+  let res
+  try {
+    res = await fetch(url, options)
+  } catch (error) {
+    if (error?.name !== 'TypeError' || error?.code !== 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR') throw error
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    try {
+      res = await fetch(url, options)
+    } catch (retryError) {
+      if (retryError?.name === 'TypeError' && retryError?.code === 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR') {
+        throw new Error('GitHub API 请求失败（TLS 证书验证）')
+      }
+      throw retryError
+    }
+  }
   if (!res.ok) return { ok: false, status: res.status, data: null }
   return { ok: true, status: res.status, data: raw ? await res.text() : await res.json() }
 }
