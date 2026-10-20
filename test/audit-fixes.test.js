@@ -115,3 +115,13 @@ test('🟢 网址判定：正确识别外部独立 homepage 与 github 代码托
   const isHosting2 = host2 === 'github.com' || host2.endsWith('.github.com') || host2 === 'gitlab.com' || host2 === 'gitee.com'
   expect(isHosting2).toBe(false)
 })
+
+test('外部站点响应体读取超时按「抓不到」处理，不能让整仓审计失败', async () => {
+  const { readBodyText } = await import('../server/audit.js')
+  // 慢站/大文件常在 body 阶段才撞上 AbortSignal 超时：fetch 已 resolve，text() 才抛。
+  const timedOut = { ok: true, text: async () => { const e = new Error('The operation timed out.'); e.name = 'TimeoutError'; throw e } }
+  expect(await readBodyText(timedOut)).toBe(null)
+  // 正常响应照常返回内容，不要顺手把成功路径也吞了
+  const ok = { ok: true, text: async () => 'User-agent: *\nDisallow:\n' }
+  expect(await readBodyText(ok)).toContain('User-agent')
+})

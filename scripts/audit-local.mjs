@@ -30,7 +30,22 @@ export async function auditBatch(repos, { concurrency = 3, token, audit = auditP
       const project = repos[index]
       const [owner, repo] = project.split('/')
       try { results[index] = await audit({ owner, repo, token }) }
-      catch { results[index] = { project, score: null, error: '审计请求失败；请检查网络或 API 限额后重试' } }
+      catch (error) {
+        /*
+         * 保留失败类型，但不回显任意错误文本 —— 异常串里可能带 URL/凭据/响应体。
+         * 原先一律写成「请检查网络或 API 限额」，把超时/TLS 误报成限额，
+         * 排查会往完全错误的方向找。
+         *
+         * 规则：只放行引擎自己产出的两条已脱敏文案，其它错误只报类型名。
+         */
+        const message = String(error?.message || '')
+        const safe = /^(GitHub API 请求失败（TLS 证书验证）|GitHub API 请求超时)$/.test(message)
+        const reason = safe ? message : (error?.name ? `类型 ${error.name}` : '')
+        results[index] = {
+          project, score: null,
+          error: reason ? `审计失败：${reason}` : '审计失败：未返回可读原因',
+        }
+      }
       progress(project, index)
     }
   }))

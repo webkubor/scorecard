@@ -45,30 +45,58 @@ export const bandOf = (score) => SCORE_BANDS.find((b) => score >= b.min) || SCOR
 
 export async function gh(path, token, { raw = false } = {}) {
   const url = `${GH}${path}`
-  const options = {
+  /*
+   * 每次尝试都要独立的新 options：AbortSignal.timeout() 是一次性的，
+   * 若把 signal 固化在共享 options 里，重试会拿着已 abort 的信号立刻失败。
+   *
+   * 加显式超时是必要的 —— 之前 GitHub API 调用完全不设上限，实测审计
+   * typora-Bloom-theme 时会挂到运行时默认超时（"The operation timed out."），
+   * 整条审计因此失败；一次审计要串几十个请求，任何一次挂住都会拖死整仓。
+   */
+  const buildOptions = () => ({
     headers: {
       Accept: raw ? 'application/vnd.github.raw' : 'application/vnd.github+json',
       'User-Agent': 'github-accounts-manager',
       ...(token ? { Authorization: `token ${token}` } : {}),
     },
+    signal: AbortSignal.timeout(15000),
+  })
+  /*
+   * 只有两类「重发一次就可能过」的传输层故障才值得重试，其余照原样抛：
+   *   · TLS 证书验证瞬断（Bun fetch 偶发 UNKNOWN_CERTIFICATE_VERIFICATION_ERROR）
+   *   · 连接/读取超时（TimeoutError，含上面 15s 上限）
+   * 都只重试一次、同 URL，绝不关闭证书校验。
+   * 重试仍失败时抛低敏描述，别让上层把它误报成「API 限额」。
+   *
+   * ⚠️ 一次尝试必须包含「读响应体」这一步：15s 信号管的是整个请求生命周期，
+   * 大仓库的 README/contents（raw）常在 body 读取阶段才超时。之前只把 fetch
+   * 包进重试，res.json()/text() 留在 try 外面，那种超时会直接冒到调用方 ——
+   * 实测 typora-Bloom-theme 就是这样整仓审计失败的。
+   */
+  const retryable = (e) =>
+    (e?.name === 'TypeError' && e?.code === 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR') ||
+    e?.name === 'TimeoutError'
+  const describe = (error) => {
+    if (!retryable(error)) return error
+    if (error?.name === 'TimeoutError') return new Error('GitHub API 请求超时')
+    return new Error('GitHub API 请求失败（TLS 证书验证）')
   }
-  let res
+  const attempt = async () => {
+    const res = await fetch(url, buildOptions())
+    if (!res.ok) return { ok: false, status: res.status, data: null }
+    return { ok: true, status: res.status, data: raw ? await res.text() : await res.json() }
+  }
   try {
-    res = await fetch(url, options)
+    return await attempt()
   } catch (error) {
-    if (error?.name !== 'TypeError' || error?.code !== 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR') throw error
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    if (!retryable(error)) throw error
+    await new Promise((resolve) => setTimeout(resolve, 300))
     try {
-      res = await fetch(url, options)
+      return await attempt()
     } catch (retryError) {
-      if (retryError?.name === 'TypeError' && retryError?.code === 'UNKNOWN_CERTIFICATE_VERIFICATION_ERROR') {
-        throw new Error('GitHub API 请求失败（TLS 证书验证）')
-      }
-      throw retryError
+      throw describe(retryError)
     }
   }
-  if (!res.ok) return { ok: false, status: res.status, data: null }
-  return { ok: true, status: res.status, data: raw ? await res.text() : await res.json() }
 }
 
 /** 项目类型决定某些维度的及格线（skill 里每维都有「类型特有检查」） */
@@ -237,6 +265,23 @@ function isRealLlmsTxt(text) {
   if (looksLikeHtml(text)) return false
   const t = String(text).trim()
   return t.length > 50 && /^#{1,3}\s+\S/m.test(t)
+}
+
+/**
+ * 读外部站点的响应体，失败返回 null。
+ *
+ * fetch 拿到 headers 不等于拿到内容：慢站/大文件常在 **body 读取阶段** 才撞上
+ * AbortSignal 超时。那种 TimeoutError 如果没人接，会从 auditProject 冒出去，
+ * 把「某个外部官网慢」升级成「整仓审计失败」—— 实测 typora-Bloom-theme 的官网
+ * 就是这样让整个仓库拿不到分数（约 10s 后抛 TimeoutError，无 stack）。
+ * 读不到就按「抓取失败 / 无法核实」处理，这是量具的盲区，不是项目的错。
+ */
+export async function readBodyText(res) {
+  try {
+    return await res.text()
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -820,8 +865,11 @@ export async function auditProject({ owner, repo, token }) {
       const robotsRes = robots.status === 'fulfilled' ? robots.value : null
       if (robotsRes) {
         if (robotsRes.ok) {
-          const text = await robotsRes.text()
-          if (looksLikeHtml(text)) {
+          const text = await readBodyText(robotsRes)
+          if (text === null) {
+            unv += 2
+            manual.push('官网 robots.txt 响应体读取失败（超时）—— 这 2 分已从满分中剔除')
+          } else if (looksLikeHtml(text)) {
             // 拿到的是 SPA fallback 的 HTML 而不是 robots.txt —— 按「没有」算
             score += 2
             ev.push('官网没有 robots.txt（SPA 返回了 HTML）—— AI 爬虫默认放行')
@@ -846,7 +894,11 @@ export async function auditProject({ owner, repo, token }) {
 
       const llmsRes = llms.status === 'fulfilled' ? llms.value : null
       if (llmsRes) {
-        if (llmsRes.ok && isRealLlmsTxt(await llmsRes.text())) {
+        const llmsText = llmsRes.ok ? await readBodyText(llmsRes) : null
+        if (llmsRes.ok && llmsText === null) {
+          unv += 1.5
+          manual.push('官网 llms.txt 响应体读取失败（超时）—— 这 1.5 分已从满分中剔除')
+        } else if (llmsText !== null && isRealLlmsTxt(llmsText)) {
           score += 1.5
           ev.push('官网有 llms.txt（LLM 内容清单）')
         } else {
