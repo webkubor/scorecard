@@ -83,6 +83,30 @@ test('page 引擎：主页面 DNS 失败 / HTTP 404 / HTTP 500 都归「目标�
   }
 })
 
+test('CORS：GHAM 域名放行，其它来源不回 Allow-Origin 头', async () => {
+  process.env.SCORECARD_DATA_DIR = mkdtempSync(join(tmpdir(), 'scorecard-cors-'))
+  const { app } = await import('../server/index.js')
+
+  // 白名单内：响应回显 Origin，GHAM 页面才能跨域读到 JSON
+  const allowed = await app.request('/api/health', {
+    headers: { Origin: 'https://gham.webkubor.online' },
+  })
+  expect(allowed.headers.get('access-control-allow-origin')).toBe('https://gham.webkubor.online')
+
+  // 白名单外：不回 Allow-Origin，浏览器自己会挡
+  const denied = await app.request('/api/health', {
+    headers: { Origin: 'https://evil.example.com' },
+  })
+  expect(denied.headers.get('access-control-allow-origin')).toBeNull()
+
+  // 预检（GHAM 前端 fetch 不会触发 —— 纯 GET 无自定义头 —— 但代理/SDK 可能发，得能过）
+  const preflight = await app.request('/api/scorecard', {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://gham.webkubor.online', 'Access-Control-Request-Method': 'GET' },
+  })
+  expect(preflight.headers.get('access-control-allow-origin')).toBe('https://gham.webkubor.online')
+})
+
 test('API 层：引擎错误按 errorStatus 出 HTTP 状态码，绝不出 502', async () => {
   process.env.SCORECARD_DATA_DIR = mkdtempSync(join(tmpdir(), 'scorecard-error-status-'))
   const { app } = await import('../server/index.js')

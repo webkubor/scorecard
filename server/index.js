@@ -8,6 +8,7 @@
 // GitHub API 限额从匿名 60 次/小时/IP 提到 5000 次/小时；不设也能跑。
 
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/bun'
 import { readFile, mkdir } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
@@ -155,6 +156,23 @@ function extractMeta(report, type) {
 }
 
 const app = new Hono()
+
+/*
+ * CORS —— 给 GHAM（gham.webkubor.online）页面嵌「快速质检」用：它的项目详情页
+ * 直连本服务的公开只读 API，浏览器跨域读响应必须带上这些头。
+ * 白名单收紧到具体域名而不是 `*`：一是将来若有需要凭据的接口不至于被放大，
+ * 二是能从日志头里分清「谁家前端在调」。要加新来源改 SCORECARD_CORS_ORIGINS，
+ * 逗号分隔。不在名单里的 Origin 一律不回 Allow-Origin 头，浏览器自然挡掉。
+ */
+const CORS_ORIGINS = new Set(
+  (process.env.SCORECARD_CORS_ORIGINS || 'https://gham.webkubor.online,https://gham-preview.webkubor.online')
+    .split(',').map((s) => s.trim()).filter(Boolean)
+)
+app.use('/api/*', cors({
+  origin: (origin) => (CORS_ORIGINS.has(origin) ? origin : undefined),
+  allowMethods: ['GET'],
+  maxAge: 86400,
+}))
 
 // ---------- Scorecard：单次质检 ----------
 //
