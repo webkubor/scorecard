@@ -198,7 +198,7 @@ function collectSchemaTypes(jsonLdBlocks) {
  */
 export async function auditPage({ url }) {
   const u = normalizeUrl(url)
-  if (!u) return { error: 'url 格式不合法', score: null }
+  if (!u) return { error: 'url 格式不合法', errorStatus: 400, score: null }
 
   const origin = u.origin
   const startUrl = u.toString()
@@ -225,9 +225,13 @@ export async function auditPage({ url }) {
     f.status === 'fulfilled' ? f.value : { ok: false, status: 0, text: '', headers: null, error: 'rejected' }
   )
 
-  // 主页面失败就基本没得判 —— 整次返回错误
+  // 主页面失败就基本没得判 —— 整次返回错误。
+  // 状态码归「目标不可用」一类（404/400）：这是用户给的 URL 的问题，能自救；
+  // 不能回 502 —— Cloudflare 会把 502 响应体换成自己的错误页，真实原因到不了用户眼前。
   if (!page.ok && page.status !== 200 && page.status !== 301 && page.status !== 302) {
-    return { error: `主页面 HTTP ${page.status || page.error || 'fail'}`, score: null }
+    const st = page.status
+    const errorStatus = st > 0 && st < 500 ? st : 404
+    return { error: `主页面 HTTP ${st || page.error || 'fail'}`, errorStatus, score: null }
   }
 
   const html = page.text || ''
@@ -626,7 +630,7 @@ if (sitemap.ok && /<\?(xml|xml-stylesheet)|<urlset|<sitemapindex/i.test(sitemap.
   const scored = dims.filter((d) => d.score != null)
   const inconclusive = dims.filter((d) => d.score == null).map((d) => d.name)
   if (!scored.length) {
-    return { error: '九个维度都无从核实', score: null, project: startUrl, dims, scoredCount: 0, inconclusiveDims: inconclusive }
+    return { error: '九个维度都无从核实', errorStatus: 400, score: null, project: startUrl, dims, scoredCount: 0, inconclusiveDims: inconclusive }
   }
   const score = clamp(scored.reduce((s, d) => s + d.score, 0) / scored.length)
 

@@ -395,7 +395,17 @@ export async function auditProject({ owner, repo, token }) {
     gh(`/repos/${full}/issues?state=open&per_page=30`, token),
   ])
 
-  if (!repoRes.ok) return { error: `仓库读取失败 HTTP ${repoRes.status}`, score: null }
+  /*
+   * errorStatus 会原样成为 API 响应码，必须跟错误性质走（404 = 目标不存在，
+   * 429 = 被限流，400 = 请求问题，503 = 上游故障）。绝不给 502：本服务部署在
+   * Cloudflare 后面，代理会把 502 的响应体整个换成自己的错误页，「仓库不存在」
+   * 这种用户能自救的信息就永远到不了用户眼前，线上只剩一句 error code: 502。
+   */
+  if (!repoRes.ok) {
+    const s = repoRes.status
+    const errorStatus = s === 404 || s === 410 ? 404 : s === 403 || s === 429 ? 429 : s < 500 ? 400 : 503
+    return { error: `仓库读取失败 HTTP ${s}`, errorStatus, score: null }
+  }
 
   const r = repoRes.data
   const readme = readmeRes.ok ? readmeRes.data : ''
@@ -928,6 +938,7 @@ export async function auditProject({ owner, repo, token }) {
   if (!scored.length) {
     return {
       error: '九个维度都无从核实（仓库可能是空的，或 README/内容都读不到）',
+      errorStatus: 400,
       score: null, project: full, dims: applicableDims,
     }
   }

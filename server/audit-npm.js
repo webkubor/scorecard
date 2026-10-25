@@ -91,10 +91,10 @@ async function resolveReadme(meta, pkgName) {
  */
 export async function auditPackage({ pkg, token }) {
   const full = String(pkg || '').trim()
-  if (!full) return { error: 'pkg required', score: null }
+  if (!full) return { error: 'pkg required', errorStatus: 400, score: null }
   // npm 包名：允许 @scope/name、带 - 加 _ 加 ~，不允许斜杠和点结尾
   if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(full)) {
-    return { error: 'pkg 格式不合法', score: null }
+    return { error: 'pkg 格式不合法', errorStatus: 400, score: null }
   }
 
   // 并发拉 registry 元数据 + 两个时间窗的下载量
@@ -104,7 +104,13 @@ export async function auditPackage({ pkg, token }) {
     safeJson(`${DOWNLOADS_API}/range/last-month/${encodeURIComponent(full)}`),
   ])
 
-  if (!meta.ok) return { error: `registry HTTP ${meta.status || meta.error || 'fail'}`, score: null }
+  // meta.status === 0 是网络层故障（DNS/超时），归 503；其余跟着 registry 走。
+  // errorStatus 不能用 502 —— Cloudflare 会把 502 响应体换成自己的错误页。
+  if (!meta.ok) {
+    const s = meta.status
+    const errorStatus = s === 404 ? 404 : s === 403 || s === 429 ? 429 : s > 0 && s < 500 ? 400 : 503
+    return { error: `registry HTTP ${s || meta.error || 'fail'}`, errorStatus, score: null }
+  }
 
   const m = meta.data
   const latest = m['dist-tags']?.latest
@@ -365,7 +371,7 @@ export async function auditPackage({ pkg, token }) {
   const scored = dims.filter((d) => d.score != null)
   const inconclusive = dims.filter((d) => d.score == null).map((d) => d.name)
   if (!scored.length) {
-    return { error: '七个维度都无从核实', score: null, project: full, dims, scoredCount: 0, inconclusiveDims: inconclusive }
+    return { error: '七个维度都无从核实', errorStatus: 400, score: null, project: full, dims, scoredCount: 0, inconclusiveDims: inconclusive }
   }
   const score = clamp(scored.reduce((s, d) => s + d.score, 0) / scored.length)
 

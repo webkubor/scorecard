@@ -31,6 +31,7 @@ Scorecard —— 开源项目质检工具。粘一个 GitHub URL / npm 包名 / 
 - **三路独立，不可混用**：GitHub 仓库（9 维）/ npm 包（7 维）/ 网页（9 维）各自一套引擎、维度、判据。报告里不要给统一总分，分头说各路分数。
 - **GitHub 引擎是权威**：改 GitHub 维度必须同步三处 —— `server/audit.js`、`scripts/check-dimensions.mjs`、`skills/project-maturity-audit/SKILL.md`，再跑 `bun run check:dimensions`。
 - 每条结论必须有证据（`evidence`）；不足写进 `gaps`；判不了写进 `manual` 并加 `unverifiable` 分值。
+- API 错误状态码不能是 502/504 —— 线上部署在 Cloudflare 后面，代理会把这两个状态码的响应体整个换成自己的错误页，真实错误文案到不了用户眼前。引擎错误在错误现场带 `errorStatus`（404/429/400/503），API 层 `errorStatusOf()` 原样采用。
 - 报告以 Markdown 交付（三个引擎各自的 `reportMarkdown()`），前端不做图片导出。
 - 对比维度集必须一致 —— 跨 type 对比返回 400，避免拿 7 维 npm 和 9 维网页硬比。
 - 文案中的「九维 / 九维度」是 GitHub 仓库的品牌口径，npm 引擎是「七维」，网页是「九维」，各自说自己的数。

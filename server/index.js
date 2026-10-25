@@ -248,7 +248,18 @@ async function getOrAudit(type, key, opts) {
       return { report: hydrate(cached, key, type), cached: true }
     }
   }
-  const { report } = await runAudit(type, { repo, pkg, url, brand, domain, questions, competitors, provider })
+  /*
+   * 引擎抛出的异常（而不是返回 error 报告）也要在这里收住：gh() 的网络层故障
+   * 会从 auditProject 直接冒出来，放任它穿到 Hono 默认错误处理器，用户只能
+   * 看到「HTTP 500」，拿不到任何可行动的信息。转成带 errorStatus 的错误报告，
+   * 走同一条错误出口。
+   */
+  let report
+  try {
+    ({ report } = await runAudit(type, { repo, pkg, url, brand, domain, questions, competitors, provider }))
+  } catch (e) {
+    report = { error: `审计引擎异常：${e?.message || e}`, errorStatus: 503, score: null }
+  }
   if (report && !report.error && report.score != null) {
     try {
       db.run(
@@ -262,6 +273,21 @@ async function getOrAudit(type, key, opts) {
     }
   }
   return { report, cached: false }
+}
+
+/*
+ * 引擎错误 → HTTP 状态码。各引擎在错误现场带 errorStatus（404 = 目标不存在，
+ * 429 = 被上游限流，400 = 请求/目标问题，503 = 上游故障），没带就按 503。
+ *
+ * ⚠️ 这里绝不能回 502/504：本服务部署在 Cloudflare 后面，代理会把它认作
+ * 「源站坏 gateway」的响应体整个替换成自己的错误页 —— 引擎写好的错误文案
+ * （如「仓库读取失败 HTTP 404」）一个字都到不了用户眼前，线上只剩一句
+ * error code: 502。曾经就有这个 bug：所有引擎错误统一落 502，而按文案前缀
+ * 「HTTP 4」转 400 的判断又永远匹配不上中文开头的错误串。
+ */
+const errorStatusOf = (report) => {
+  const s = Number(report?.errorStatus)
+  return s >= 400 && s < 600 ? s : 503
 }
 
 app.get('/api/scorecard', async (c) => {
@@ -288,7 +314,7 @@ app.get('/api/scorecard', async (c) => {
    */
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
   const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
-  if (report?.error) return c.json({ error: report.error }, report.error.startsWith('HTTP 4') ? 400 : 502)
+  if (report?.error) return c.json({ error: report.error }, errorStatusOf(report))
   if (!report || report.score == null) {
     return c.json({ error: report?.error || 'audit returned no score' }, 400)
   }
@@ -683,7 +709,7 @@ app.get('/api/scorecard/report.md', async (c) => {
 
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
   const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
-  if (report?.error) return c.text(report.error, report.error.startsWith('HTTP 4') ? 400 : 502)
+  if (report?.error) return c.text(report.error, errorStatusOf(report))
   if (!report || report.score == null) return c.text('audit returned no score', 400)
 
   const mdFn = type === 'npm' ? reportMarkdownNpm
@@ -744,7 +770,11 @@ app.get('/api/scorecard/compare', async (c) => {
   const errors = []
   if (aRes.report?.error) errors.push({ side: 'a', error: aRes.report.error })
   if (bRes.report?.error) errors.push({ side: 'b', error: bRes.report.error })
-  if (errors.length) return c.json({ errors }, 502)
+  // 状态码取第一个出错一侧的 errorStatus（不能回 502，Cloudflare 会吞掉响应体）
+  if (errors.length) {
+    const firstErrored = aRes.report?.error ? aRes.report : bRes.report
+    return c.json({ errors }, errorStatusOf(firstErrored))
+  }
 
   if (!aRes.report || aRes.report.score == null) return c.json({ error: `a 审计失败：${aRes.report?.error || 'no score'}` }, 400)
   if (!bRes.report || bRes.report.score == null) return c.json({ error: `b 审计失败：${bRes.report?.error || 'no score'}` }, 400)
@@ -791,7 +821,10 @@ app.get('/api/scorecard/compare.md', async (c) => {
     getOrAudit(type, aRaw, { ...aOpts, fresh }),
     getOrAudit(type, bRaw, { ...bOpts, fresh }),
   ])
-  if (aRes.report?.error || bRes.report?.error) return c.text(aRes.report?.error || bRes.report?.error, 502)
+  if (aRes.report?.error || bRes.report?.error) {
+    const firstErrored = aRes.report?.error ? aRes.report : bRes.report
+    return c.text(aRes.report?.error || bRes.report?.error, errorStatusOf(firstErrored))
+  }
   if (!aRes.report || aRes.report.score == null) return c.text('a 审计失败', 400)
   if (!bRes.report || bRes.report.score == null) return c.text('b 审计失败', 400)
 
@@ -921,4 +954,7 @@ console.log(`[scorecard] github token: ${GITHUB_TOKEN ? 'configured (5000 req/h)
 
 // page 引擎一次要并发拉主页面 + 11 个根目录探测，匿名 API 慢的时候
 // 13 个请求合并起来偶尔会超过 Bun 默认 10s 的 idleTimeout。放到 60s 给宽裕点。
+// app 导出给测试用（app.request 不起端口就能打完整路由）；作为入口运行时
+// Bun 只认 default 导出，多一个具名导出无副作用。
+export { app }
 export default { port: PORT, hostname: HOST, fetch: app.fetch, idleTimeout: 60 }

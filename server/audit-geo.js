@@ -459,17 +459,18 @@ function sentiment(text, brand) {
  */
 export async function auditGeo({ brand, domain = '', questions = [], competitors = [], provider = 'anthropic', env = process.env, adapter: injected = null }) {
   const b = (brand || '').trim()
-  if (!b) return { error: '缺 brand', score: null }
-  if (!questions.length) return { error: '缺 questions —— GEO 问的是用户会问的品类问题，品牌词测出来没有意义', score: null }
+  if (!b) return { error: '缺 brand', errorStatus: 400, score: null }
+  if (!questions.length) return { error: '缺 questions —— GEO 问的是用户会问的品类问题，品牌词测出来没有意义', errorStatus: 400, score: null }
 
   const offline = provider === 'offline'
-  // adapter 可以从外面塞进来。四个维度的算分逻辑（尤其「没检索过就不给引用率打���」
+  // adapter 可以从外面塞进来。四个维度的算分逻辑（尤其「没检索过就不给引用率打分」
   // 这种分支）必须能在不发网络请求的情况下测到 —— 否则每次改判据都得真花钱跑一遍。
   const adapter = injected || PROVIDERS[provider]
-  if (!offline && !injected && !adapter) return { error: `未知 provider：${provider}（可选：${Object.keys(PROVIDERS).join(' / ')} / offline）`, score: null }
+  if (!offline && !injected && !adapter) return { error: `未知 provider：${provider}（可选：${Object.keys(PROVIDERS).join(' / ')} / offline）`, errorStatus: 400, score: null }
   if (!offline && !injected && !adapter.available(env)) {
     return {
       error: `${provider} 没配 key（环境变量 ${adapter.keyEnv}）—— GEO 要花钱调 LLM，没 key 不能跑。线上实例故意不配，只读本地存下来的历史；本机想跑完整功能就自己 clone 一份配上 key，或用 provider=offline 看结构。`,
+      errorStatus: 400,
       score: null,
       offline: false,
     }
@@ -506,6 +507,7 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
   if (!runs.length) {
     return {
       error: `全部 ${questions.length} 个问题都问失败${failures[0] ? `，首个原因：${failures[0].error}` : ''}`,
+      errorStatus: 503,
       score: null,
       offline,
       failures,
@@ -629,7 +631,7 @@ export async function auditGeo({ brand, domain = '', questions = [], competitors
   const scored = dims.filter((d) => d.score != null)
   const inconclusive = dims.filter((d) => d.score == null).map((d) => d.name)
   if (!scored.length) {
-    return { error: '各维度都无从核实', score: null, dims, scoredCount: 0, inconclusiveDims: inconclusive, offline, failures }
+    return { error: '各维度都无从核实', errorStatus: 400, score: null, dims, scoredCount: 0, inconclusiveDims: inconclusive, offline, failures }
   }
   const score = clamp(scored.reduce((s, d) => s + d.score, 0) / scored.length)
 
