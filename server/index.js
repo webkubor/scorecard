@@ -321,8 +321,65 @@ async function getOrAudit(type, key, opts) {
 }
 
 /*
+ * 同类基准 —— 「同一类型项目，各维的中位分」。
+ *
+ * 为什么需要：雷达图只画自己的形状，看不出「我在同类里算好还是差」。
+ * 维度条已经给了精确读数，雷达再重复一遍就是浪费；给它一条**基准线**，
+ * 它才回答另一个问题：这个项目在同类里处于什么位置。
+ *
+ * 口径要说清楚：样本来自本工具的体检记录（`audits` 表），即「被本工具体检过的
+ * 同类型项目」，不是全网 GitHub 的普查。所以响应里带 n，前端照实写「同类中位 n=19」。
+ * 样本太少（<8）就不给 —— 几条记录的中位数没有参考价值，宁可画不出来。
+ */
+const baselineCache = new Map() // type -> { at, payload }
+const BASELINE_TTL = 10 * 60 * 1000
+const BASELINE_MIN_N = 8
+
+function median(values) {
+  if (!values.length) return null
+  const s = [...values].sort((a, b) => a - b)
+  const mid = s.length >> 1
+  return s.length % 2 ? s[mid] : Math.round(((s[mid - 1] + s[mid]) / 2) * 10) / 10
+}
+
+function computeBaseline(type) {
+  const rows = db
+    .query(`SELECT dims FROM audits WHERE targetType = 'github' AND type = ? AND score IS NOT NULL AND dims IS NOT NULL ORDER BY ts DESC LIMIT 300`)
+    .all(type)
+  const byKey = new Map()
+  for (const row of rows) {
+    let dims = []
+    try { dims = typeof row.dims === 'string' ? JSON.parse(row.dims || '[]') : (row.dims || []) } catch { continue }
+    for (const d of dims) {
+      if (d.score == null) continue
+      if (!byKey.has(d.key)) byKey.set(d.key, { key: d.key, name: d.name, scores: [] })
+      byKey.get(d.key).scores.push(d.score)
+    }
+  }
+  const dims = [...byKey.values()].map((v) => ({
+    key: v.key,
+    name: v.name,
+    median: median(v.scores),
+    count: v.scores.length,
+  }))
+  // 样本数按「参与该维的项目数」取最小值：某一维只有 3 个样本时，整条基准都不可信
+  const n = dims.length ? Math.min(...dims.map((d) => d.count)) : 0
+  return { type, n, dims, usable: n >= BASELINE_MIN_N }
+}
+
+app.get('/api/scorecard/baseline', (c) => {
+  const type = (c.req.query('type') || '').toString().trim()
+  if (!type) return c.json({ error: 'type 必填（如 cli / app / library）' }, 400)
+  const hit = baselineCache.get(type)
+  if (hit && Date.now() - hit.at < BASELINE_TTL) return c.json(hit.payload)
+  const payload = computeBaseline(type)
+  baselineCache.set(type, { at: Date.now(), payload })
+  return c.json(payload)
+})
+
+/*
  * 引擎错误 → HTTP 状态码。各引擎在错误现场带 errorStatus（404 = 目标不存在，
- * 429 = 被上游限流，400 = 请求/目标问题，503 = 上游故障），没带就按 503。
+ * 429 = 被上游限流，400 = 请求问题，503 = 上游故障），没带就按 503。
  *
  * ⚠️ 这里绝不能回 502/504：本服务部署在 Cloudflare 后面，代理会把它认作
  * 「源站坏 gateway」的响应体整个替换成自己的错误页 —— 引擎写好的错误文案

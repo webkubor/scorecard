@@ -259,6 +259,9 @@ async function generate() {
     const res = await fetch(`/api/scorecard?${qs}`, { cache: 'no-store' })
     const j = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    // 同类基准（各维中位分）并行拉：雷达要靠它回答「我在同类里算好还是差」，
+    // 但它只让雷达多一条参考线，不该挡住报告出来。
+    loadBaseline(j.report?.type)
     // loading 动画走完再切到 report —— 即便服务端返回快也至少看到 1.5s 进度感
     setTimeout(() => {
       report.value = j.report
@@ -425,14 +428,49 @@ async function copyCompareLink() {
 // ---------- 雷达图 / 维度条 ----------
 const DIMS_MAX = 10
 
+// 雷达的画布参数集中在这里：模板里的坐标和 computed 都从这里取，
+// 改半径/画布只需要改这一处（之前是三处硬编码 110/88，容易改漏）。
+const RADAR = { cx: 150, cy: 150, r: 112, size: 300 }
+
 // 只有拿到证据的维度才进雷达图。把「判不了」当 0 画，图上会凹一个缺口，
 // 看起来像这一维很差 —— 而事实是我们没量到，不该用图形暗示一个结论。
 const scoredDims = computed(() => (report.value?.dims || []).filter((d) => d.score != null))
 
+// ---------- 同类基准 ----------
+//
+// 维度条已经给了精确读数，雷达再画一遍同样的信息就是浪费。给它一条**基准线**，
+// 它才回答另一个问题：这个项目在同类里处于什么位置。
+// 样本来自本工具的体检记录，n 太小就不画（几条记录的中位数没有参考价值）。
+const baseline = ref(null)
+const baselineDims = computed(() => {
+  const b = baseline.value
+  if (!b?.usable) return null
+  const map = new Map((b.dims || []).map((d) => [d.key, d]))
+  // 只画「本项目也有分数、基准也有中位」的维度，否则两条线不可比
+  const list = scoredDims.value
+    .map((d) => ({ ...d, median: map.get(d.key)?.median }))
+    .filter((d) => d.median != null)
+  return list.length === scoredDims.value.length && list.length ? list : null
+})
+
+async function loadBaseline(type) {
+  baseline.value = null
+  if (!type) return
+  try {
+    const res = await fetch(`/api/scorecard/baseline?type=${encodeURIComponent(type)}`, { cache: 'no-store' })
+    const j = await res.json().catch(() => ({}))
+    if (res.ok && j?.usable) baseline.value = j
+  } catch { baseline.value = null }
+}
+
+// 及格线：判据里的分档线（6 分 = 工程健康但分发薄弱）。这条线不依赖任何样本，
+// 永远是可靠的参照 —— 低于它的维度就是不及格。
+const PASS_SCORE = 6
+
 const radarPolygon = computed(() => {
   const n = scoredDims.value.length
   if (!n) return ''
-  const cx = 110, cy = 110, r = 88
+  const { cx, cy, r } = RADAR
   return scoredDims.value
     .map((d, i) => {
       const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
@@ -444,16 +482,46 @@ const radarPolygon = computed(() => {
     .join(' ')
 })
 
+// 及格线多边形（正多边形，每条轴都是 PASS_SCORE）
+const radarPassPolygon = computed(() => {
+  const n = scoredDims.value.length
+  if (!n) return ''
+  const { cx, cy, r } = RADAR
+  return scoredDims.value
+    .map((_, i) => {
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
+      const rr = (PASS_SCORE / DIMS_MAX) * r
+      return `${(cx + Math.cos(angle) * rr).toFixed(1)},${(cy + Math.sin(angle) * rr).toFixed(1)}`
+    })
+    .join(' ')
+})
+
+// 同类中位多边形 —— 逐维取中位，不是一个整体平均
+const radarBaselinePolygon = computed(() => {
+  const list = baselineDims.value
+  if (!list) return ''
+  const n = list.length
+  const { cx, cy, r } = RADAR
+  return list
+    .map((d, i) => {
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
+      const rr = (d.median / DIMS_MAX) * r
+      return `${(cx + Math.cos(angle) * rr).toFixed(1)},${(cy + Math.sin(angle) * rr).toFixed(1)}`
+    })
+    .join(' ')
+})
+
 const radarAxes = computed(() => {
   const n = scoredDims.value.length
   if (!n) return []
-  const cx = 110, cy = 110, r = 88
+  const { cx, cy, r } = RADAR
   return scoredDims.value.map((d, i) => {
     const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
     return {
       x: cx + Math.cos(angle) * r,
       y: cy + Math.sin(angle) * r,
-      label: d.name
+      label: d.name,
+      score: d.score
     }
   })
 })
@@ -1025,33 +1093,44 @@ onMounted(() => {
 
         <!-- 雷达图（纯 SVG） -->
         <div class="sc-radar-wrap">
-          <svg viewBox="0 0 220 220" class="sc-radar" aria-label="维度雷达图">
-            <!-- 同心圆刻度 -->
-            <circle cx="110" cy="110" r="22" class="sc-radar-grid"/>
-            <circle cx="110" cy="110" r="44" class="sc-radar-grid"/>
-            <circle cx="110" cy="110" r="66" class="sc-radar-grid"/>
-            <circle cx="110" cy="110" r="88" class="sc-radar-grid"/>
+          <svg :viewBox="`0 0 ${RADAR.size} ${RADAR.size}`" class="sc-radar" aria-label="维度雷达图">
+            <!-- 同心圆刻度：2/4/6/8/10 分五档 -->
+            <circle v-for="k in 5" :key="`ring-${k}`" :cx="RADAR.cx" :cy="RADAR.cy"
+              :r="RADAR.r * k / 5" class="sc-radar-grid"/>
 
             <!-- 轴线 -->
             <line v-for="(a, i) in radarAxes" :key="i"
-              x1="110" y1="110" :x2="a.x" :y2="a.y"
+              :x1="RADAR.cx" :y1="RADAR.cy" :x2="a.x" :y2="a.y"
               class="sc-radar-axis" />
+
+            <!-- 及格线（6 分分档线）：低于它的维度就是不及格 -->
+            <polygon v-if="radarPassPolygon" :points="radarPassPolygon" class="sc-radar-pass" />
+
+            <!-- 同类中位参考：回答「我在同类里处于什么位置」 -->
+            <polygon v-if="radarBaselinePolygon" :points="radarBaselinePolygon" class="sc-radar-baseline" />
 
             <!-- 数据多边形 -->
             <polygon :points="radarPolygon" class="sc-radar-shape" />
 
             <!-- 数据点 -->
             <circle v-for="(d, i) in report.dims" :key="`pt-${i}`"
-              :cx="110 + Math.cos(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * 88"
-              :cy="110 + Math.sin(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * 88"
-              r="2.5" class="sc-radar-pt" />
+              :cx="RADAR.cx + Math.cos(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * RADAR.r"
+              :cy="RADAR.cy + Math.sin(-Math.PI / 2 + (i * 2 * Math.PI) / scoredDims.length) * (d.score / DIMS_MAX) * RADAR.r"
+              r="3" class="sc-radar-pt" />
 
-            <!-- 维度标签 -->
+            <!-- 维度标签：带分数，省得再去对维度条 -->
             <text v-for="(a, i) in radarAxes" :key="`tx-${i}`"
               :x="a.x" :y="a.y" text-anchor="middle"
-              :dy="a.y < 110 ? -4 : a.y > 110 ? 12 : 4"
-              class="sc-radar-label">{{ a.label }}</text>
+              :dy="a.y < RADAR.cy ? -6 : a.y > RADAR.cy ? 15 : 5"
+              class="sc-radar-label">{{ a.label }} <tspan class="sc-radar-score">{{ a.score }}</tspan></text>
           </svg>
+
+          <!-- 图例：两条参考线各代表什么 -->
+          <div v-if="radarBaselinePolygon || radarPassPolygon" class="sc-radar-legend">
+            <span><i class="lg lg-self" />本项目</span>
+            <span v-if="radarBaselinePolygon"><i class="lg lg-base" />同类中位<span class="lg-n">n={{ baseline?.n }}</span></span>
+            <span><i class="lg lg-pass" />及格线 {{ PASS_SCORE }}</span>
+          </div>
         </div>
 
         <!-- 维度条形 -->
@@ -1072,6 +1151,8 @@ onMounted(() => {
                 v-if="d.score != null"
                 :style="{ width: (d.score * 10) + '%', background: bandColor(d.score) }"
               />
+              <!-- 及格线刻度：光看填充条不知道 6 分在哪 -->
+              <span v-if="d.score != null" class="sc-bar-pass" :style="{ left: PASS_SCORE * 10 + '%' }" />
             </div>
             <span
               v-if="d.score != null"
@@ -1720,11 +1801,21 @@ onMounted(() => {
   .sc-card-foot {
     grid-column: 1 / -1;
   }
+  /*
+   * 维度条跨两列：原来它挤在左窄列（76px 1fr 30px），标签和数字都放不下，
+   * 而右下一整格空着 —— 空白不是设计，是没人给它安排位置。跨全宽后标签、
+   * 进度条、数字都松快，右下的空也一并消失。
+   */
+  .sc-dims {
+    grid-column: 1 / -1;
+    margin: 18px 0 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 6px 28px;
+  }
   .sc-card-head { margin-bottom: 10px; }
   .sc-card-hero { margin: 0; }
-  .sc-radar-wrap { display: none; }
-  .sc-dims { margin: 0; }
-  .sc-dim-row { grid-template-columns: 76px 1fr 30px; }
+  .sc-dim-row { grid-template-columns: 88px 1fr 34px; }
   .sc-card-foot { margin-top: 18px; }
 }
 .sc-card::before {
@@ -1799,10 +1890,12 @@ onMounted(() => {
 /* 雷达图 */
 .sc-radar-wrap {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
   margin: 8px 0 18px;
 }
-.sc-radar { width: 220px; height: 220px; }
+.sc-radar { width: 300px; height: 300px; max-width: 100%; }
 .sc-radar-grid {
   fill: none;
   stroke: rgba(124, 148, 173, 0.18);
@@ -1818,12 +1911,45 @@ onMounted(() => {
   stroke-width: 2;
   stroke-linejoin: round;
 }
+/* 及格线：虚线正多边形，标出 6 分分档 —— 低于它的维度就是不及格 */
+.sc-radar-pass {
+  fill: none;
+  stroke: rgba(210, 153, 34, 0.5);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+}
+/* 同类中位：另一条虚线，回答「我在同类里算好还是差」 */
+.sc-radar-baseline {
+  fill: none;
+  stroke: rgba(125, 157, 140, 0.75);
+  stroke-width: 1.4;
+  stroke-dasharray: 6 3;
+}
 .sc-radar-pt { fill: var(--accent); }
 .sc-radar-label {
   fill: var(--text-muted);
   font-size: 9px;
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
+.sc-radar-score { fill: #c9d1d9; }
+/* 图例：两条参考线各代表什么，别让读者猜 */
+.sc-radar-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.sc-radar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sc-radar-legend .lg {
+  width: 14px; height: 0; display: inline-block;
+  border-top: 2px solid var(--accent);
+}
+.sc-radar-legend .lg-base { border-top: 2px dashed rgba(125, 157, 140, 0.9); }
+.sc-radar-legend .lg-pass { border-top: 2px dashed rgba(210, 153, 34, 0.7); }
+.sc-radar-legend .lg-n { color: #6e7681; }
 
 /* 维度条 */
 .sc-dims {
@@ -1848,12 +1974,21 @@ onMounted(() => {
   background: var(--bg-elev-2);
   border-radius: 999px;
   overflow: hidden;
+  position: relative;
 }
 .sc-bar i {
   display: block;
   height: 100%;
   border-radius: 999px;
   transition: width 0.5s ease;
+}
+/* 及格线刻度：光看填充条不知道 6 分的线在哪 */
+.sc-bar-pass {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 1px;
+  background: rgba(210, 153, 34, 0.75);
 }
 .sc-dim-score {
   font-family: ui-monospace, SFMono-Regular, monospace;
