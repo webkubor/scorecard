@@ -16,16 +16,29 @@ set -euo pipefail
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/scorecard}"
 SERVICE="${SERVICE:-scorecard}"
 
+# bun 未必在非登录 shell 的 PATH 里（systemd 用的是绝对路径）。
+# 依次找：环境变量 → PATH → 服务实际用的那个位置 → 常见安装路径。
+BUN="${BUN:-}"
+if [ -z "$BUN" ]; then
+  for candidate in "$(command -v bun 2>/dev/null)" /home/ubuntu/.bun/bin/bun /root/.bun/bin/bun "$HOME/.bun/bin/bun" /usr/local/bin/bun; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then BUN="$candidate"; break; fi
+  done
+fi
+if [ -z "$BUN" ]; then
+  echo "❌ 找不到 bun —— 设 BUN=/path/to/bun 或把它装到 PATH 里" >&2
+  exit 1
+fi
+
 cd "$DEPLOY_DIR"
 
 echo "── 拉代码 ──"
 git pull --ff-only
 
 echo "── 装依赖 ──"
-bun install --frozen-lockfile
+"$BUN" install --frozen-lockfile
 
 echo "── 构建前端（dist/ 不入库，必须在这里生成）──"
-bun run build
+"$BUN" run build
 
 echo "── 重启服务 ──"
 sudo systemctl restart "$SERVICE"
