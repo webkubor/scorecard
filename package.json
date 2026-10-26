@@ -24,14 +24,14 @@
   },
   "dependencies": {
     "dayjs": "^1.11.23",
-    "hono": "^4.13.3",
+    "hono": "^4.13.14",
     "im-notify-kit": "^0.4.0",
-    "vue": "^3.4.38"
+    "vue": "^3.5.44"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.1.3",
-    "jsdom": "^30.1.1",
-    "vite": "^5.4.6",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "jsdom": "^30.1.3",
+    "vite": "^8.3.5",
     "vite-plugin-refresh-guard": "^0.3.1"
   },
   "bin": {
