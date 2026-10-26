@@ -25,6 +25,7 @@ Scorecard —— 开源项目质检工具。粘一个 GitHub URL / npm 包名 / 
 - `bun run server`：起后端（默认 :54445），自动托管 `dist/`
 - `bun run dev`：前端 dev 服务（:54446，`/api` 代理到后端）
 - `bun run check:dimensions`：维度一致性检查（只覆盖 GitHub 引擎 ↔ skill）
+- `SCORECARD_FEISHU_WEBHOOK=<url> bun scripts/notify-release.mjs`：发版飞书卡片（CI 在 release published 时自动跑；卡片内容以 CHANGELOG 顶部版本段为真源，没条目不发空卡）
 
 ## 约定
 

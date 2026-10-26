@@ -2,7 +2,11 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## Unreleased
+## 2.1.0 — 2026-10-26
+
+### 变更
+
+- `feat(api)` — `/api/*` 加 CORS 白名单（`SCORECARD_CORS_ORIGINS` 可配）：GHAM 项目详情页的「快速质检」直连本服务，白名单收紧到具体域名，非名单来源不回 Allow-Origin 头。附白名单/预检回归测试。
 
 ### 修复
 

@@ -7,6 +7,7 @@
       "dependencies": {
         "dayjs": "^1.11.23",
         "hono": "^4.13.3",
+        "im-notify-kit": "^0.4.0",
         "vue": "^3.4.38",
       },
       "devDependencies": {
@@ -191,6 +192,8 @@
     "hono": ["hono@4.13.3", "", {}, "sha512-r8AO2mYHoLxSHkgafNeC/BXyb2vWRxD3jem4Ts+ptav8oTG5FIRifAjuJEmZI4bSvvc2ns0GxmIYiZnHqN3mMw=="],
 
     "html-encoding-sniffer": ["html-encoding-sniffer@7.0.0", "", { "dependencies": { "@exodus/bytes": "^1.15.1" } }, "sha512-UikN5yr7xsCDAq87Or5or0PAlD3HJJOKVzM05az588WnpDJ4Ux7a2A53Qi6gofGg2/EtvF/H4hCi/TXfCW4Y6w=="],
+
+    "im-notify-kit": ["im-notify-kit@0.4.0", "", {}, "sha512-lBIiuNV1kF0T23x2l4Lb9xHY5KF/t4DfN9cNplSK0+Z4Y+mWug1K92Kpvlmilv5XpdC0QI2gw3jxxIqqv7HbCA=="],
 
     "is-potential-custom-element-name": ["is-potential-custom-element-name@1.0.1", "", {}, "sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ=="],
 

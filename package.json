@@ -1,7 +1,7 @@
 {
   "name": "project-scorecard",
   "private": false,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "description": "九维度开源项目质检：GitHub 仓库 / npm 包 / 网站 / 品牌 GEO。判据对齐 NIST SSDF、OpenSSF、OWASP SAMM；读不到的项标「无法核实」不猜分。免登录。",
   "license": "MIT",
@@ -25,6 +25,7 @@
   "dependencies": {
     "dayjs": "^1.11.23",
     "hono": "^4.13.3",
+    "im-notify-kit": "^0.4.0",
     "vue": "^3.4.38"
   },
   "devDependencies": {

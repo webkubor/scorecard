@@ -1,0 +1,26 @@
+name: release-notify
+
+# 发版通知：GitHub Release 发布时推飞书卡片。
+# webhook 在仓库 secret FEISHU_WEBHOOK 里 —— 凭据不进仓库。
+# 卡片内容以 CHANGELOG 顶部版本段为真源（脚本会校验与 package.json 一致）。
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      - name: 推送发版卡片
+        run: bun scripts/notify-release.mjs
+        env:
+          SCORECARD_FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
