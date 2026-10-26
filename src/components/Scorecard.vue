@@ -558,10 +558,10 @@ function onDimToggle(d, e) {
 }
 
 function bandColor(score) {
-  if (score >= 9) return '#7d9d8c' // --score-top
-  if (score >= 6) return '#7c94ad' // --score-ok
-  if (score >= 3) return '#c4a47c' // --score-warn
-  return '#b08585'                 // --score-bad
+  if (score >= 9) return '#34d399' // --score-top
+  if (score >= 6) return '#58a6ff' // --score-ok
+  if (score >= 3) return '#e3b341' // --score-warn
+  return '#f47067'                 // --score-bad
 }
 function bandLabel(score) {
   if (score >= 9) return '⭐ 卓越'
@@ -1065,7 +1065,7 @@ onMounted(() => {
         <div class="sc-card-hero">
           <div class="sc-repo-name">{{ parsedRepo }}</div>
           <div class="sc-score-row">
-            <div class="sc-big-score" :style="{ color: bandColor(report.score) }">
+            <div class="sc-big-score" :style="{ '--band': bandColor(report.score) }">
               {{ report.score }}<span class="sc-score-unit">/10</span>
             </div>
             <div class="sc-band" :style="{ color: bandColor(report.score) }">
@@ -1094,6 +1094,14 @@ onMounted(() => {
         <!-- 雷达图（纯 SVG） -->
         <div class="sc-radar-wrap">
           <svg :viewBox="`0 0 ${RADAR.size} ${RADAR.size}`" class="sc-radar" aria-label="维度雷达图">
+            <defs>
+              <!-- 雷达填充：中心亮、边缘融进底色 —— 立体感来自这层渐变而不是描边 -->
+              <radialGradient id="sc-radar-fill" cx="50%" cy="42%" r="65%">
+                <stop offset="0%" stop-color="rgba(88, 166, 255, 0.42)" />
+                <stop offset="70%" stop-color="rgba(88, 166, 255, 0.16)" />
+                <stop offset="100%" stop-color="rgba(88, 166, 255, 0.04)" />
+              </radialGradient>
+            </defs>
             <!-- 同心圆刻度：2/4/6/8/10 分五档 -->
             <circle v-for="k in 5" :key="`ring-${k}`" :cx="RADAR.cx" :cy="RADAR.cy"
               :r="RADAR.r * k / 5" class="sc-radar-grid"/>
@@ -1149,7 +1157,7 @@ onMounted(() => {
             <div class="sc-bar">
               <i
                 v-if="d.score != null"
-                :style="{ width: (d.score * 10) + '%', background: bandColor(d.score) }"
+                :style="{ width: (d.score * 10) + '%', '--band': bandColor(d.score) }"
               />
               <!-- 及格线刻度：光看填充条不知道 6 分在哪 -->
               <span v-if="d.score != null" class="sc-bar-pass" :style="{ left: PASS_SCORE * 10 + '%' }" />
@@ -1526,7 +1534,14 @@ onMounted(() => {
   font-size: 56px; font-weight: 800;
   line-height: 1; letter-spacing: -2px;
 }
-.sc-compare-score .sc-score-unit { font-size: 18px; color: var(--text-dim); margin-left: 4px; }
+.sc-compare-score .sc-score-unit {
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--text-dim);
+  -webkit-text-fill-color: var(--text-dim);
+  background: none;
+  filter: none;
+}
 .sc-compare-band { font-size: 14px; font-weight: 600; }
 .sc-compare-vs {
   text-align: center;
@@ -1663,7 +1678,7 @@ onMounted(() => {
 }
 .sc-input-wrap:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(124, 148, 173, 0.18);
+  box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.16);
 }
 .sc-input-icon { color: var(--text-dim); flex-shrink: 0; }
 .sc-input {
@@ -1783,12 +1798,18 @@ onMounted(() => {
 
 /* 报告卡片 */
 .sc-card {
-  background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
+  background:
+    radial-gradient(1200px 400px at 85% -10%, rgba(88, 166, 255, 0.09), transparent 60%),
+    linear-gradient(180deg, #161b22 0%, #0d1117 100%);
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 28px;
   position: relative;
   overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(230, 237, 243, 0.06),
+    0 12px 40px rgba(1, 4, 9, 0.55),
+    0 0 80px rgba(88, 166, 255, 0.06);
 }
 @media (min-width: 700px) {
   .sc-card {
@@ -1823,7 +1844,18 @@ onMounted(() => {
   position: absolute;
   top: 0; left: 0; right: 0;
   height: 3px;
-  background: linear-gradient(90deg, var(--accent), #7d9d8c, var(--accent));
+  background: linear-gradient(90deg, var(--accent), var(--score-top), var(--accent));
+  background-size: 200% 100%;
+  animation: topFlow 7s ease-in-out infinite;
+}
+@keyframes topFlow {
+  0%, 100% { background-position: 0% 0; }
+  50% { background-position: 100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sc-card::before { animation: none; }
+  .sc-radar-pass, .sc-radar-baseline { animation: none; }
+  .sc-radar-shape { animation: none; }
 }
 .sc-card-head {
   display: flex;
@@ -1867,6 +1899,22 @@ onMounted(() => {
    * 又保住数字等宽对齐。
    */
   font-variant-numeric: tabular-nums;
+  /* 分数用档位色的渐变字 + 同色光晕：报告的第一视觉焦点要有体积感 */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--band) 55%, #fff) 0%,
+    var(--band) 78%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 18px color-mix(in srgb, var(--band) 30%, transparent));
+  animation: scoreIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes scoreIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sc-big-score { animation: none; }
 }
 .sc-score-unit {
   font-size: 24px;
@@ -1898,32 +1946,46 @@ onMounted(() => {
 .sc-radar { width: 300px; height: 300px; max-width: 100%; }
 .sc-radar-grid {
   fill: none;
-  stroke: rgba(124, 148, 173, 0.18);
+  stroke: rgba(88, 166, 255, 0.16);
   stroke-width: 1;
 }
 .sc-radar-axis {
-  stroke: rgba(124, 148, 173, 0.2);
+  stroke: rgba(88, 166, 255, 0.18);
   stroke-width: 1;
 }
 .sc-radar-shape {
-  fill: rgba(124, 148, 173, 0.22);
+  fill: url(#sc-radar-fill);
   stroke: var(--accent);
   stroke-width: 2;
   stroke-linejoin: round;
+  filter: drop-shadow(0 0 14px rgba(88, 166, 255, 0.35));
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: radarIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-/* 及格线：虚线正多边形，标出 6 分分档 —— 低于它的维度就是不及格 */
+@keyframes radarIn {
+  from { opacity: 0; transform: scale(0.65); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* 及格线：虚线正多边形，标出 6 分分档 —— 低于它的维度就是不及格。
+   虚线缓慢流动（蚂蚁线），让参考线「活着」但不抢数据的戏 */
 .sc-radar-pass {
   fill: none;
-  stroke: rgba(210, 153, 34, 0.5);
+  stroke: rgba(227, 179, 65, 0.55);
   stroke-width: 1.2;
   stroke-dasharray: 4 4;
+  animation: ants 30s linear infinite;
 }
 /* 同类中位：另一条虚线，回答「我在同类里算好还是差」 */
 .sc-radar-baseline {
   fill: none;
-  stroke: rgba(125, 157, 140, 0.75);
+  stroke: rgba(52, 211, 153, 0.8);
   stroke-width: 1.4;
   stroke-dasharray: 6 3;
+  animation: ants 30s linear infinite reverse;
+}
+@keyframes ants {
+  to { stroke-dashoffset: -300; }
 }
 .sc-radar-pt { fill: var(--accent); }
 .sc-radar-label {
@@ -1980,7 +2042,15 @@ onMounted(() => {
   display: block;
   height: 100%;
   border-radius: 999px;
-  transition: width 0.5s ease;
+  background: linear-gradient(90deg, var(--band), color-mix(in srgb, var(--band) 72%, #fff));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--band) 40%, transparent);
+  animation: barIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes barIn {
+  from { width: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sc-bar i { animation: none; }
 }
 /* 及格线刻度：光看填充条不知道 6 分的线在哪 */
 .sc-bar-pass {
@@ -2332,7 +2402,7 @@ onMounted(() => {
 .sc-trending-hits {
   font-size: 10.5px;
   color: var(--accent);
-  background: rgba(124, 148, 173, 0.18);
+  background: rgba(88, 166, 255, 0.16);
   padding: 1px 6px;
   border-radius: 999px;
 }
