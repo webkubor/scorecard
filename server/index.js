@@ -611,20 +611,34 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
   const repo = c.req.param('repo').replace(/\.git$/, '')
   if (!/^[\w.-]+\/[\w.-]+$/.test(`${owner}/${repo}`)) return c.text('bad repo', 400)
 
-  // 从缓存拿最近一次结果；没缓存就 0 分兜底
+  // 从缓存拿最近一次结果；没缓存就 0 分兜底。
+  // dims 一并取 —— 分享卡上的雷达要画**真实**维度分，不是编的形状（见下方 radarSvg）。
+  const key = `${owner}/${repo}`
   const cached = db
-    .query(`SELECT score, band, type, stars FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`)
-    .get(`${owner}/${repo}`)
+    .query(`SELECT score, band, type, stars, dims FROM audits WHERE projectId = ? AND targetType = 'github' ORDER BY ts DESC LIMIT 1`)
+    .get(key)
+    || db
+      .query(`SELECT score, band, type, stars, dims FROM audits WHERE projectId = ? ORDER BY ts DESC LIMIT 1`)
+      .get(key)
   const score = cached?.score ?? 0
   const band = cached?.band ?? '—'
   const stars = cached?.stars ?? 0
+  let dims = []
+  try { dims = typeof cached?.dims === 'string' ? JSON.parse(cached.dims || '[]') : (cached?.dims || []) } catch {}
+  const scoredDims = dims.filter((d) => d.score != null)
+  const weakest = scoredDims.length ? [...scoredDims].sort((a, b) => a.score - b.score)[0] : null
 
   const color = score >= 9 ? '#7d9d8c' : score >= 6 ? '#7c94ad' : score >= 3 ? '#c4a47c' : '#b08585'
+  const starLabel = stars === 1 ? '1 star' : `${stars} stars`
+  // 「核实了几维」比「几分」更能说明这份报告的可信度 —— 公开列出，不藏。
+  const verifyLine = scoredDims.length
+    ? `已核实 ${scoredDims.length}/${dims.length} 维` + (weakest ? ` · 最弱：${weakest.name} ${weakest.score}` : '')
+    : '（暂无缓存数据）'
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="accent" x="0" y="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#7c94ad"/>
       <stop offset="100%" stop-color="#7d9d8c"/>
     </linearGradient>
@@ -632,7 +646,7 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
   <rect x="0" y="0" width="1200" height="630" fill="#0d1117"/>
   <rect x="0" y="0" width="1200" height="4" fill="url(#accent)"/>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', sans-serif">
     <!-- brand -->
     <text x="60" y="78" font-size="22" font-weight="700" letter-spacing="3" fill="#7c94ad">⬢ ${escapeXml(BRAND)}</text>
 
@@ -645,17 +659,13 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
 
     <!-- band -->
     <text x="60" y="430" font-size="26" font-weight="600" fill="${color}">${escapeXml(band)}</text>
-    <text x="60" y="464" font-size="20" fill="#8b949e">⭐ ${stars} stars · type: ${escapeXml(cached?.type || 'unknown')}</text>
+    <text x="60" y="464" font-size="20" fill="#8b949e">⭐ ${starLabel} · type: ${escapeXml(cached?.type || 'unknown')}</text>
 
-    <!-- radar placeholder: a hex ring -->
-    <g transform="translate(820 315)">
-      <circle cx="0" cy="0" r="160" fill="none" stroke="rgba(124,148,173,0.18)" stroke-width="2"/>
-      <circle cx="0" cy="0" r="120" fill="none" stroke="rgba(124,148,173,0.18)" stroke-width="2"/>
-      <circle cx="0" cy="0" r="80" fill="none" stroke="rgba(124,148,173,0.18)" stroke-width="2"/>
-      <circle cx="0" cy="0" r="40" fill="none" stroke="rgba(124,148,173,0.18)" stroke-width="2"/>
-      ${radarPolygon(score)}
-      <circle cx="0" cy="0" r="160" fill="none" stroke="#7c94ad" stroke-width="2" opacity="0.6"/>
-    </g>
+    <!-- 核实口径：公开说明这份分数覆盖了几维 -->
+    <text x="60" y="500" font-size="19" fill="#6e7681">${escapeXml(verifyLine)}</text>
+
+    <!-- 真实维度雷达：九轴，刻度 4/6/8/10，只画有分数的维度 -->
+    ${radarSvg(scoredDims, { r: 150, color })}
 
     <!-- CTA -->
     <text x="60" y="570" font-size="22" font-weight="600" fill="#e6edf3">测你的开源项目 → ${escapeXml(SITE_URL)}</text>
@@ -723,19 +733,76 @@ function escapeXml(s) {
   })[c])
 }
 
-// 简单 8 角雷达多边形（octagon）
-function radarPolygon(score) {
-  const n = 8
-  const cx = 0, cy = 0, r = 140
-  const pts = []
-  for (let i = 0; i < n; i++) {
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n
-    // 给一个围绕 score 抖动的假形状（OG 图不展示真实维度，纯视觉）
-    const variance = 0.7 + 0.3 * Math.sin(i * 1.7 + score)
-    const rr = Math.min(r, Math.max(r * 0.4, score * 14 * variance))
-    pts.push(`${(cx + Math.cos(angle) * rr).toFixed(1)},${(cy + Math.sin(angle) * rr).toFixed(1)}`)
+/**
+ * 真实维度雷达（分享卡用）。
+ *
+ * 🔴 这里曾经是一个**编造**的形状：`radarPolygon(score)` 只吃总分，用
+ * `0.7 + 0.3*sin(i*1.7+score)` 造一圈抖动的点，还画 8 轴（报告实际 9 维）。
+ * 分享卡是本项目对外传播的主载体，而卖点恰恰是「证据制、不猜分」——
+ * 分享一张编出来的雷达，等于在最重要的环节放弃立身之本。
+ * 现在改成从 audits.dims 里取**真实**维度分来画。
+ *
+ * 只画有分数的维度（score == null 的「无法核实」不画）：把判不了当 0 画，
+ * 图上会凹一个缺口，看起来像这一维很差，而事实是我们没量到。
+ */
+function radarSvg(scoredDims, { r = 150, color = '#7c94ad' } = {}) {
+  const n = scoredDims.length
+  const cx = 900
+  const cy = 300
+  if (!n) {
+    // 没有维度数据：只画空网格，不编形状
+    return `<g transform="translate(${cx} ${cy})">
+      <circle cx="0" cy="0" r="${r}" fill="none" stroke="rgba(124,148,173,0.18)" stroke-width="2"/>
+      <text x="0" y="6" text-anchor="middle" font-size="18" fill="#6e7681">暂无维度数据</text>
+    </g>`
   }
-  return `<polygon points="${pts.join(' ')}" fill="rgba(124,148,173,0.25)" stroke="#7c94ad" stroke-width="3" stroke-linejoin="round"/>`
+  const angleAt = (i) => -Math.PI / 2 + (i * 2 * Math.PI) / n
+  const pt = (i, ratio) => {
+    const a = angleAt(i)
+    const rr = r * ratio
+    return [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]
+  }
+
+  // 网格环：2/4/6/8/10 分五档，并标出 4/8/10 三个刻度数字
+  const rings = [0.2, 0.4, 0.6, 0.8, 1]
+    .map((ratio) => `<circle cx="${cx}" cy="${cy}" r="${(r * ratio).toFixed(1)}" fill="none" stroke="rgba(124,148,173,${ratio === 1 ? 0.3 : 0.16})" stroke-width="1.5"/>`)
+    .join('\n      ')
+
+  const axes = scoredDims.map((_, i) => {
+    const [x, y] = pt(i, 1)
+    return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(124,148,173,0.2)" stroke-width="1"/>`
+  }).join('\n      ')
+
+  const points = scoredDims.map((d, i) => {
+    const [x, y] = pt(i, Math.max(0, Math.min(1, d.score / 10)))
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+
+  const dots = scoredDims.map((d, i) => {
+    const [x, y] = pt(i, Math.max(0, Math.min(1, d.score / 10)))
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="${color}"/>`
+  }).join('\n      ')
+
+  // 维度标签：跟着角度摆，横向用 start/middle/end 对齐才不会出框。
+  // 标签里直接带分数 —— 比另画一圈刻度数字有用：读者一眼知道哪一维弱多少。
+  const labels = scoredDims.map((d, i) => {
+    const a = angleAt(i)
+    const lr = r + 26
+    const x = cx + Math.cos(a) * lr
+    const y = cy + Math.sin(a) * lr
+    const cos = Math.cos(a)
+    const anchor = Math.abs(cos) < 0.35 ? 'middle' : cos > 0 ? 'start' : 'end'
+    const dy = Math.sin(a) < -0.35 ? -6 : Math.sin(a) > 0.35 ? 16 : 5
+    return `<text x="${x.toFixed(1)}" y="${(y + dy).toFixed(1)}" text-anchor="${anchor}" font-size="16" fill="#c9d1d9">${escapeXml(d.name)} <tspan fill="#8b949e">${d.score}</tspan></text>`
+  }).join('\n      ')
+
+  return `<g>
+      ${rings}
+      ${axes}
+      <polygon points="${points}" fill="${color}33" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>
+      ${dots}
+      ${labels}
+    </g>`
 }
 
 // Markdown 报告 —— 这是主要的分享形态。

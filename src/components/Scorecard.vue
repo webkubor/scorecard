@@ -1010,7 +1010,7 @@ onMounted(() => {
                 · 类型 {{ report.type }}
               </template>
               <template v-else>
-                <Icon name="star" :size="13" /> {{ report.stars || 0 }} stars · 类型 {{ report.type }}
+                <Icon name="star" :size="13" /> {{ report.stars || 0 }} {{ (report.stars || 0) === 1 ? 'star' : 'stars' }} · 类型 {{ report.type }}
               </template>
             </div>
             <!-- 有维度没量到就得说清楚：否则这个分数看起来像每一维都核实过 -->
@@ -1770,7 +1770,12 @@ onMounted(() => {
   font-weight: 800;
   line-height: 1;
   letter-spacing: -2px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  /*
+   * 不用等宽字体：等宽里小数点占满一个字符格，「8.4」会渲染成「8 . 4」，
+   * 三个字符各占一格，看着像三个数。比例字体 + tabular-nums 既消掉这个空隙，
+   * 又保住数字等宽对齐。
+   */
+  font-variant-numeric: tabular-nums;
 }
 .sc-score-unit {
   font-size: 24px;
