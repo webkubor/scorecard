@@ -2,6 +2,34 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## 2.2.0 — 未发布
+
+### 新增
+
+- `feat(profile)` — **GitHub 个人首页质检（第五路入口，7 维）**：把 `github.com/<user>`
+  当一份简历测 —— ① 身份门面（name / bio / company / location / hireable）
+  ② 首页自述（`<u>/<u>` 仓库的 profile README 在不在、结构撑不撑得起简历；
+  组织账号走 `.github/profile/README.md`）③ **可视化**（stats 卡 / streak /
+  技能图标 / trophy / 活跃曲线 / 贪吃蛇 / 访客计数，按 README 源码的服务特征判）
+  ④ 活跃度（贡献图 / streak / 最近 push / 公共事件）⑤ 作品集（原创仓库 / 总 star /
+  代表作 / fork 占比 / 语言广度）⑥ 影响力（followers / 被 fork / 跨仓库协作 PR）
+  ⑦ 链接触达（blog 配置与可达 / README 外链 / email / twitter）。
+  动机：GitHub 首页正在变成开发者的简历，而个人主页与仓库的判据完全不同 ——
+  拿九维去评一个人会系统性失真，所以独立成路。数据面全公开可读：贡献图从
+  `github.com/users/<u>/contributions` 抓取（个人主页 HTML 已改客户端渲染，
+  登录态外没有日历），置顶仓库从主页 HTML 的 pinned 区块抓取，抓不到按
+  unverifiable 剔除不扣分。入口：`?type=profile&user=<login>`（`@user` /
+  `github.com/<user>` 都收，缓存 key 归一成裸 login）、CLI `scorecard @webkubor`、
+  网页端输入 `@用户名`。compare 支持 profile vs profile。附 mock 网络层回归测试。
+
+### 变更
+
+- `chore(deps)` — **前端工具链整链升到当前最新**：vite 5.4 → **8.3**（依赖管线底层
+  换代为 rolldown，esbuild 退出依赖树）、@vitejs/plugin-vue 5 → **6**、vue 3.4 →
+  **3.5.44**、hono → 4.13.14。前置排查确认无阻碍：vite-plugin-refresh-guard peer
+  范围 `vite >=4 <10`、plugin-vue 6 官方支持 vite 8。构建产物 gzip 52.16 → 50.87 KB，
+  60 个测试全过，dev 代理链路（/api、SFC 编译）实测正常。
+
 ## 2.1.0 — 2026-10-26
 
 ### 变更

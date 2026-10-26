@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 四路引擎的静态纪律守卫（维度层）。
+ * 五路引擎的静态纪律守卫（维度层）。
  *
  * 为什么需要它：`check-dimensions.mjs` 只比对 GitHub 引擎与 skill 的维度名，
- * 而 npm / page / GEO 三路**没有 skill 副本**，等于完全不在门禁覆盖内。
+ * 而 npm / page / profile / GEO 四路**没有 skill 副本**，等于完全不在门禁覆盖内。
  * 加了维度却漏写 evidence、漏过 normalizeDim、或者把 key 写重了，
  * 都可能在「分数看起来正常」的情况下悄悄上线。
  *
@@ -34,6 +34,7 @@ const ENGINES = [
   { file: 'server/audit.js', label: 'GitHub 仓库' },
   { file: 'server/audit-npm.js', label: 'npm 包' },
   { file: 'server/audit-page.js', label: '网页' },
+  { file: 'server/audit-profile.js', label: 'GitHub 首页' },
   { file: 'server/audit-geo.js', label: 'GEO' },
 ]
 
@@ -82,7 +83,7 @@ for (const { file, label } of ENGINES) {
   summary.push({ label, file, count: matches.length, normalized, keys })
 }
 
-console.log('四路引擎维度层检查：\n')
+console.log('五路引擎维度层检查：\n')
 for (const s of summary) {
   const ok = s.normalized === s.count
   console.log(
@@ -93,7 +94,7 @@ for (const s of summary) {
 }
 
 if (!problems.length) {
-  console.log('\n✅ 四路引擎的维度层纪律一致')
+  console.log('\n✅ 五路引擎的维度层纪律一致')
   process.exit(0)
 }
 

@@ -167,24 +167,38 @@ const loadingSteps = ref([
 let loadingTimer = null
 
 // ---------- 解析输入 ----------
-function parseRepoInput(raw) {
+//
+// 单目标输入按形态分流，与 CLI 的 inferType 同一套规则：
+//   @user / github.com/<user>（只有一段路径）→ profile —— GitHub 个人首页（简历视角）
+//   owner/repo（可带 github.com/ 前缀）      → github —— 仓库九维
+// 裸单词（npm 包名）与任意 URL 不在单目标输入框的支持范围 —— 那两路只有
+// 对比模式与 CLI 入口，别在这里抢输入。
+function parseTargetInput(raw) {
   let s = (raw || '').trim()
-  if (!s) return ''
-  // 容错：去掉 https://github.com/ 前缀、尾部 /、.git
-  s = s.replace(/^https?:\/\/github\.com\//i, '').replace(/^github\.com\//i, '').replace(/\.git$/, '').replace(/\/$/, '')
-  if (/^[\w.-]+\/[\w.-]+$/.test(s)) return s
-  // 只输了一个名字 —— 提示用户补全
-  if (/^[\w.-]+$/.test(s)) return s + '/'
-  return ''
+  if (!s) return { type: '', target: '' }
+  if (/^@[\w.-]+$/.test(s)) return { type: 'profile', target: s.slice(1) }
+  // github.com/<user>：剥掉域名后剩一段、且不是 owner/repo，就是个人首页
+  const stripped = s.replace(/^https?:\/\/github\.com\//i, '').replace(/^github\.com\//i, '').replace(/\/+$/, '')
+  if (/^[\w.-]+$/.test(stripped) && /github\.com\//i.test(s)) return { type: 'profile', target: stripped }
+  // 仓库形态沿用旧 parseRepoInput 的容错：剥掉 .git 后缀
+  const repo = stripped.replace(/\.git$/, '')
+  if (/^[\w.-]+\/[\w.-]+$/.test(repo)) return { type: 'github', target: repo }
+  return { type: '', target: '' }
 }
 
-const canSubmit = computed(() => {
-  const r = parseRepoInput(input.value)
-  return /^[\w.-]+\/[\w.-]+$/.test(r)
-})
+function parseRepoInput(raw) {
+  // 兼容旧调用：返回 owner/repo 或 @user（后者供 hash 与展示用）
+  const { type, target } = parseTargetInput(raw)
+  return type === 'github' ? target : type === 'profile' ? '@' + target : ''
+}
 
-// 对比模式：两个目标形态必须一致（同 type）—— 防止用户拿 npm vs github 比
+const canSubmit = computed(() => parseTargetInput(input.value).type !== '')
+
+// 对比模式：两个目标形态必须一致（同 type）—— 防止用户拿 npm vs github 比。
+// 规则与单目标 parseTargetInput 同源：@user / github.com/<user> 是个人首页。
 function inferredCompareType(s) {
+  if (/^@[\w.-]+$/.test(s)) return 'profile'
+  if (/^github\.com\/[\w.-]+\/?$/i.test(s.replace(/^https?:\/\//i, ''))) return 'profile'
   if (/^https?:\/\//i.test(s)) return 'page'
   if (/^(@[\w.-]+\/)?[\w.-]+$/.test(s)) return 'npm'
   if (/^[\w.-]+\/[\w.-]+$/.test(s)) return 'github'
@@ -215,23 +229,34 @@ function startLoadingAnim() {
 }
 
 // ---------- 真正调用 API ----------
+//
+// queryType/queryTarget 记住「这次报告是哪一路的」—— Markdown 导出、历史曲线
+// 都要按同一 type 重放，否则首页报告导出时会去打仓库接口。
+const queryType = ref('github')
+const queryTarget = ref('')
+
 async function generate() {
-  const r = parseRepoInput(input.value)
-  if (!/^[\w.-]+\/[\w.-]+$/.test(r)) return
+  const { type, target } = parseTargetInput(input.value)
+  if (!type) return
   // 切回单目标模式时清掉对比模式的残留
   if (mode.value !== 'single') { mode.value = 'single'; resetCompare() }
-  parsedRepo.value = r
+  queryType.value = type
+  queryTarget.value = target
+  parsedRepo.value = type === 'profile' ? '@' + target : target
   stage.value = 'loading'
   errorMsg.value = ''
   startLoadingAnim()
 
   // URL 同步进 hash，刷新能回来
-  if (window.location.hash !== `#/report/${r}`) {
-    history.replaceState(null, '', `#/report/${r}`)
+  if (window.location.hash !== `#/report/${parsedRepo.value}`) {
+    history.replaceState(null, '', `#/report/${parsedRepo.value}`)
   }
 
   try {
-    const res = await fetch(`/api/scorecard?repo=${encodeURIComponent(r)}`, { cache: 'no-store' })
+    const qs = type === 'profile'
+      ? `type=profile&user=${encodeURIComponent(target)}`
+      : `repo=${encodeURIComponent(target)}`
+    const res = await fetch(`/api/scorecard?${qs}`, { cache: 'no-store' })
     const j = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
     // loading 动画走完再切到 report —— 即便服务端返回快也至少看到 1.5s 进度感
@@ -239,8 +264,9 @@ async function generate() {
       report.value = j.report
       cached.value = !!j.cached
       stage.value = 'report'
-      // 复检历史与主报告并行拉，不阻塞渲染
-      loadHistory(r)
+      // 复检历史与主报告并行拉，不阻塞渲染。history 的 key 用归一化 target
+      // （profile 时是裸 login）—— audits 表的 projectId 存的就是它。
+      loadHistory(target, type)
     }, Math.max(0, 1600 - (loadingSteps.value.length * 350)))
   } catch (err) {
     errorMsg.value = err.message
@@ -260,11 +286,11 @@ async function generate() {
 const historyData = ref(null)
 const historyLoading = ref(false)
 
-async function loadHistory(target) {
+async function loadHistory(target, type = 'github') {
   historyLoading.value = true
   historyData.value = null
   try {
-    const res = await fetch(`/api/scorecard/history?target=${encodeURIComponent(target)}`, {
+    const res = await fetch(`/api/scorecard/history?target=${encodeURIComponent(target)}&type=${type}`, {
       cache: 'no-store',
     })
     const j = await res.json().catch(() => ({}))
@@ -306,11 +332,13 @@ function reset() {
 }
 
 // ---------- 对比模式：真正调用 ----------
-async function generateCompare() {
-  if (!canSubmitCompare.value) return
+// forcedType 来自分享链接的 ?type=：它比形态推断可靠 —— profile 的目标（裸 login）
+// 与 npm 包名同形，推断会认错；生成链接时存了什么 type，打开时就按什么跑。
+async function generateCompare(forcedType = '') {
   const a = inputA.value.trim()
   const b = inputB.value.trim()
-  const type = inferredCompareType(a) || inferredCompareType(b)
+  if (!forcedType && !canSubmitCompare.value) return
+  const type = forcedType || inferredCompareType(a) || inferredCompareType(b)
   if (!type) { errorMsg.value = '无法识别两个目标的类型'; stage.value = 'error'; return }
   stage.value = 'loading'
   errorMsg.value = ''
@@ -370,12 +398,13 @@ async function copyCompareMarkdown() {
 function compareShareUrl() {
   if (!compareReport.value) return ''
   const { a, b, type } = compareReport.value
-  // 类型推断与生成时同源 —— 否则生成的链接前端一加载就跑错
-  const inferred = inferredCompareType(a.project) || inferredCompareType(b.project) || type
+  // type 优先于形态推断：profile 的 project 是裸 login（如 webkubor），
+  // 形态推断会把它认成 npm 包名 —— 链接一打开就跑错路。推断只兜 type 缺失的老数据。
+  const resolved = type || inferredCompareType(a.project) || inferredCompareType(b.project)
   const qs = new URLSearchParams({
     share: a.project,
     compare: b.project,
-    ...(inferred ? { type: inferred } : {}),
+    ...(resolved ? { type: resolved } : {}),
   }).toString()
   return `${window.location.origin}/?${qs}`
 }
@@ -549,12 +578,16 @@ async function copySkillCmd() {
 // 服务端 /api/scorecard/report.md 直接吐一份写给 AI 助手看的报告：
 // 记分卡 + 按影响排序的整改清单 + 逐维度证据 + 一段可照抄的指令。
 // 拿到就能粘进 Claude Code / Cursor 让它照着改 —— 比一张长图能做的事多得多。
+const reportQuery = computed(() => queryType.value === 'profile'
+  ? `type=profile&user=${encodeURIComponent(queryTarget.value)}`
+  : `repo=${encodeURIComponent(queryTarget.value)}`)
+
 async function copyMarkdown() {
   if (!parsedRepo.value) return
   shareBusy.value = true
   shareMsg.value = '📝 正在生成 Markdown 报告…'
   try {
-    const res = await fetch(`/api/scorecard/report.md?repo=${encodeURIComponent(parsedRepo.value)}`, {
+    const res = await fetch(`/api/scorecard/report.md?${reportQuery.value}`, {
       headers: { 'X-Visitor-Id': getVisitorId() },
       cache: 'no-store'
     })
@@ -566,7 +599,7 @@ async function copyMarkdown() {
   } catch (err) {
     // 剪贴板在非 https / 无权限时会失败，这时把报告开在新标签页让人手动复制
     shareMsg.value = `❌ ${err.message} —— 已在新标签打开，可手动复制`
-    window.open(`/api/scorecard/report.md?repo=${encodeURIComponent(parsedRepo.value)}`, '_blank')
+    window.open(`/api/scorecard/report.md?${reportQuery.value}`, '_blank')
   } finally {
     shareBusy.value = false
     setTimeout(() => (shareMsg.value = ''), 3200)
@@ -577,7 +610,7 @@ async function copyMarkdown() {
 async function downloadMarkdown() {
   if (!parsedRepo.value) return
   try {
-    const res = await fetch(`/api/scorecard/report.md?repo=${encodeURIComponent(parsedRepo.value)}`, {
+    const res = await fetch(`/api/scorecard/report.md?${reportQuery.value}`, {
       headers: { 'X-Visitor-Id': getVisitorId() }
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -586,7 +619,7 @@ async function downloadMarkdown() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${BRAND_SLUG}-${parsedRepo.value.replace('/', '-')}.md`
+    a.download = `${BRAND_SLUG}-${parsedRepo.value.replace(/^@/, '').replace('/', '-')}.md`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -602,8 +635,8 @@ async function downloadMarkdown() {
 // ---------- 初始化 ----------
 onMounted(() => {
   loadStats()
-  // 单目标分享：#/report/<repo>
-  if (props.initialRepo && /\/[\w.-]+/.test(props.initialRepo)) {
+  // 单目标分享：#/report/<repo> 或 #/report/@<user>（个人首页）
+  if (props.initialRepo && (/\/[\w.-]+/.test(props.initialRepo) || /^@[\w.-]+$/.test(props.initialRepo))) {
     input.value = props.initialRepo
     generate()
   }
@@ -612,7 +645,7 @@ onMounted(() => {
     mode.value = 'compare'
     inputA.value = props.initialCompare.a
     inputB.value = props.initialCompare.b
-    generateCompare()
+    generateCompare((props.initialCompare.type || '').toLowerCase())
   }
 })
 </script>
@@ -631,8 +664,8 @@ onMounted(() => {
         <span class="grad">先跑一次体检</span>
       </h1>
       <p class="sc-sub">
-        粘一个 GitHub 仓库 / npm 包 / 网页 URL —— 九维度雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
-        读不到的判据标「无法核实」，不猜分。免登录，公开仓库无 token 也能跑。
+        粘一个 GitHub 仓库，或 <code>@用户名</code> 把 TA 的 GitHub 首页当简历测 —— 雷达图 + 整改清单 + 一份可直接喂给 AI 的 Markdown 报告。
+        读不到的判据标「无法核实」，不猜分。免登录，公开目标无 token 也能跑。
       </p>
       <p class="sc-sub sc-sub-diff">
         名字与 <a href="https://scorecard.dev/" target="_blank" rel="noopener">OpenSSF Scorecard</a> 相近，
@@ -691,7 +724,7 @@ onMounted(() => {
             v-model="input"
             class="sc-input"
             type="text"
-            placeholder="github.com/owner/repo  ·  npm 包名  ·  https://example.com"
+            placeholder="github.com/owner/repo  ·  @user 测 GitHub 首页"
             spellcheck="false"
             autocomplete="off"
             @keydown.enter.prevent="generate"
@@ -702,7 +735,9 @@ onMounted(() => {
         </div>
       </form>
 
-      <form v-else class="sc-form sc-form-compare" @submit.prevent="generateCompare">
+      <!-- generateCompare() 显式空参调用：原生 submit 会把 Event 当第一个参数传进
+           forcedType（truthy），type 会被拼成 [object SubmitEvent] 导致 400 -->
+      <form v-else class="sc-form sc-form-compare" @submit.prevent="generateCompare()">
         <div class="sc-compare-pair">
           <div class="sc-input-wrap">
             <span class="sc-side-tag a">A</span>
@@ -713,7 +748,7 @@ onMounted(() => {
               placeholder="测试 env（如 https://staging.example.com）"
               spellcheck="false"
               autocomplete="off"
-              @keydown.enter.prevent="generateCompare"
+              @keydown.enter.prevent="generateCompare()"
             />
           </div>
           <span class="sc-vs">↔</span>
@@ -726,7 +761,7 @@ onMounted(() => {
               placeholder="线上 env（如 https://example.com）"
               spellcheck="false"
               autocomplete="off"
-              @keydown.enter.prevent="generateCompare"
+              @keydown.enter.prevent="generateCompare()"
             />
           </div>
           <button class="btn primary sc-go" :disabled="!canSubmitCompare" type="submit">
@@ -738,6 +773,7 @@ onMounted(() => {
 
       <div class="sc-chips">
         <span class="muted">试一下：</span>
+        <button class="sc-chip" @click="input = '@webkubor'; generate()">@webkubor · GitHub 首页</button>
         <button class="sc-chip" @click="input = 'webkubor/typora-Bloom-theme'; generate()">webkubor/typora-Bloom-theme</button>
         <button class="sc-chip" @click="input = 'vitejs/vite'; generate()">vitejs/vite</button>
         <button class="sc-chip" @click="input = 'denoland/deno'; generate()">denoland/deno</button>
@@ -968,12 +1004,18 @@ onMounted(() => {
               {{ bandLabel(report.score) }}
             </div>
             <div class="sc-stars muted">
-              <Icon name="star" :size="13" /> {{ report.stars || 0 }} stars
-              · 类型 {{ report.type }}
+              <template v-if="queryType === 'profile'">
+                <Icon name="star" :size="13" /> 作品累计 {{ report.stars || 0 }}★ · {{ report.followers || 0 }} followers
+                <span v-if="report.contributions != null">· 近一年 {{ report.contributions }} 次贡献</span>
+                · 类型 {{ report.type }}
+              </template>
+              <template v-else>
+                <Icon name="star" :size="13" /> {{ report.stars || 0 }} stars · 类型 {{ report.type }}
+              </template>
             </div>
-            <!-- 有维度没量到就得说清楚：否则这个分数看起来像九维都核实过 -->
-            <div v-if="report.scoredCount && report.scoredCount < 9" class="sc-partial-note">
-              按 {{ report.scoredCount }}/9 维平均
+            <!-- 有维度没量到就得说清楚：否则这个分数看起来像每一维都核实过 -->
+            <div v-if="report.scoredCount && report.scoredCount < report.dims.length" class="sc-partial-note">
+              按 {{ report.scoredCount }}/{{ report.dims.length }} 维平均
               <span v-if="report.inconclusiveDims?.length">
                 · {{ report.inconclusiveDims.join('、') }}读不到判据，未计入
               </span>
@@ -983,7 +1025,7 @@ onMounted(() => {
 
         <!-- 雷达图（纯 SVG） -->
         <div class="sc-radar-wrap">
-          <svg viewBox="0 0 220 220" class="sc-radar" aria-label="9维度雷达图">
+          <svg viewBox="0 0 220 220" class="sc-radar" aria-label="维度雷达图">
             <!-- 同心圆刻度 -->
             <circle cx="110" cy="110" r="22" class="sc-radar-grid"/>
             <circle cx="110" cy="110" r="44" class="sc-radar-grid"/>
@@ -1123,7 +1165,7 @@ onMounted(() => {
         <div class="sc-findings-head">
           <div>
             <p class="sc-section-kicker">核验依据</p>
-            <h3 id="sc-evidence-title">九维明细</h3>
+            <h3 id="sc-evidence-title">维度明细</h3>
           </div>
           <span class="muted">展开查看每项依据</span>
         </div>
@@ -1175,7 +1217,7 @@ onMounted(() => {
         <button class="btn ghost" @click="copyShareLink">
           <Icon name="link" :size="13" /> 复制链接
         </button>
-        <a class="btn ghost" :href="`https://github.com/${parsedRepo}`" target="_blank" rel="noopener">
+        <a class="btn ghost" :href="`https://github.com/${parsedRepo.replace(/^@/, '')}`" target="_blank" rel="noopener">
           <Icon name="github" :size="13" /> 在 GitHub 打开
         </a>
         <button class="btn ghost" @click="reset">换一个</button>

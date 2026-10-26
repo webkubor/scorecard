@@ -1,9 +1,9 @@
 # Scorecard
 
-> 做决定之前，先跑一次体检。粘一个 GitHub 仓库 / npm 包名 / 网页 URL，几秒钟拿到
-> 九维度雷达图、按「影响÷成本」排序的整改清单、一份可直接喂给 AI 的 Markdown 报告。
+> 做决定之前，先跑一次体检。粘一个 GitHub 仓库 / npm 包名 / 网页 URL / @GitHub 用户名，
+> 几秒钟拿到九维度雷达图、按「影响÷成本」排序的整改清单、一份可直接喂给 AI 的 Markdown 报告。
 > 免登录，公开仓库无需 token。GitHub 仓库走 9 维，npm 走 7 维，网页走 9 维，
-> 品牌 GEO 走 4 维，判据互不通用。
+> GitHub 个人首页（把首页当简历测）走 7 维，品牌 GEO 走 4 维，判据互不通用。
 >
 > **与 OpenSSF Scorecard 的区别**：名字相近，做的不是一件事。OpenSSF Scorecard 管
 > 供应链安全（依赖钉版本、token 权限、发包签名），面向企业安全审计；本项目管项目
@@ -51,6 +51,7 @@
 - GET https://scorecard.webkubor.online/api/scorecard?repo=owner/name —— GitHub 仓库九维
 - GET https://scorecard.webkubor.online/api/scorecard?type=npm&pkg=react —— npm 包七维
 - GET https://scorecard.webkubor.online/api/scorecard?type=page&url=https://... —— 网页九维
+- GET https://scorecard.webkubor.online/api/scorecard?type=profile&user=webkubor —— GitHub 个人首页七维（身份门面 / 首页自述 / 可视化 / 活跃度 / 作品集 / 影响力 / 链接触达）
 - GET https://scorecard.webkubor.online/api/scorecard/report.md?repo=owner/name —— 同一份报告的 Markdown 版
 - GET https://scorecard.webkubor.online/api/scorecard/compare?type=page&a=<urlA>&b=<urlB> —— 两路对比 + 维度差分
 - GET https://scorecard.webkubor.online/api/scorecard/history?target=owner/name —— 同一项目的历次评估与维度变化

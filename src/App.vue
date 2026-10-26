@@ -132,10 +132,9 @@ onMounted(async () => {
         GEO 四维度 · 提及 / 引用 / 份额 / 倾向 · 免登录 · 线上实例不配 key，只读历史，零花费
       </span>
       <span v-else>
-        九维度标准与
-        <a href="https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit"
-           target="_blank" rel="noopener">project-maturity-audit</a>
-        同源 · 免登录 · 公开仓库无需 token
+        GitHub 仓库九维 / npm 包七维 / 网页九维 / GitHub 首页七维 · 判据互不通用 ·
+        与 <a href="https://github.com/webkubor/scorecard/tree/main/skills/project-maturity-audit"
+           target="_blank" rel="noopener">project-maturity-audit</a> 同源 · 免登录 · 公开目标无需 token
       </span>
     </footer>
     <UpdatePrompt :visible="hasUpdate" :mode="mode" :changelog-html="'<p>有新版本可用，即将自动刷新。</p>'" @refresh="applyUpdate" />

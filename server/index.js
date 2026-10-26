@@ -18,6 +18,7 @@ import { Database } from 'bun:sqlite'
 import { auditProject, reportMarkdown as reportMarkdownGithub } from './audit.js'
 import { auditPackage, reportMarkdown as reportMarkdownNpm } from './audit-npm.js'
 import { auditPage, reportMarkdown as reportMarkdownPage } from './audit-page.js'
+import { auditProfile, reportMarkdown as reportMarkdownProfile, normalizeProfileTarget } from './audit-profile.js'
 import { auditGeo, reportMarkdown as reportMarkdownGeo, geoProviderStatus, hydrateGeo, resolveGeoProvider } from './audit-geo.js'
 import { compareReports, compareMarkdown } from './compare.js'
 
@@ -124,7 +125,7 @@ function hydrate(row, key, type = 'github') {
   }
 }
 
-/** 从三路报告里挑出该 type 需要缓存的额外字段 */
+/** 从各路报告里挑出该 type 需要缓存的额外字段 */
 function extractMeta(report, type) {
   if (!report) return {}
   if (type === 'npm') return {
@@ -152,6 +153,18 @@ function extractMeta(report, type) {
     inconclusiveDims: report.inconclusiveDims,
     failures: report.failures,
   }
+  if (type === 'profile') return {
+    profileUrl: report.profileUrl,
+    accountType: report.accountType,
+    followers: report.followers,
+    contributions: report.contributions,
+    currentStreak: report.currentStreak,
+    publicRepos: report.publicRepos,
+    profileReadme: report.profileReadme,
+    hireable: report.hireable,
+    bandHint: report.bandHint,
+    inconclusiveDims: report.inconclusiveDims,
+  }
   return {}
 }
 
@@ -176,18 +189,20 @@ app.use('/api/*', cors({
 
 // ---------- Scorecard：单次质检 ----------
 //
-// 三路入口互相独立、各自判据：
+// 五路入口互相独立、各自判据：
 //   ?repo=owner/name              → type=github（保留旧 API）
 //   ?type=npm&pkg=react           → npm 包质检（registry + downloads + 兜底 GitHub README）
 //   ?type=page&url=https://...    → 网页质检（主页面 + 11 个根目录探测并发）
+//   ?type=profile&user=webkubor   → GitHub 个人首页质检（七维：身份/自述/可视化/活跃/作品/影响/触达）
+//   ?type=geo&brand=...           → 品牌 GEO
 //
 // 设计要点：
-// 1. 免登录；只有 GitHub 入口吃 SCORECARD_GITHUB_TOKEN，npm/page 不需要
-// 2. 30 分钟内同 target 直接复用上次结果
+// 1. 免登录；github 与 profile 两路吃 SCORECARD_GITHUB_TOKEN，npm/page/geo 不需要
+// 2. 30 分钟内同 target 直接复用上次结果（geo 除外）
 // 3. 每次结果都写进 audits 表，留趋势（targetType 列区分入口）
 function resolveType(c) {
   const explicit = (c.req.query('type') || '').toString().toLowerCase().trim()
-  if (['github', 'npm', 'page', 'geo'].includes(explicit)) return explicit
+  if (['github', 'npm', 'page', 'profile', 'geo'].includes(explicit)) return explicit
   // 向后兼容：老 URL 只传 ?repo=
   if (c.req.query('repo')) return 'github'
   return null
@@ -200,6 +215,14 @@ function resolveTarget(type, c) {
   if (type === 'github') return { key: repo || url, repo, pkg, url }
   if (type === 'npm') return { key: pkg, repo: '', pkg, url: '' }
   if (type === 'page') return { key: url, repo: '', pkg: '', url }
+  if (type === 'profile') {
+    // @user / github.com/user / https://github.com/user 都收。归一化失败先放原始串，
+    // 让下面的 type-specific 校验给出具体报错；统一成裸 login 是为了让
+    // 同一人不会存出 @user / github.com/user 两份历史曲线。
+    const rawUser = (c.req.query('user') || '').toString().trim()
+    const user = normalizeProfileTarget(rawUser || url || repo || '')
+    return { key: user || rawUser || url || repo || '', repo: '', pkg: '', url: '', user }
+  }
   // GEO 的 target 是品牌名。问题清单与竞品走逗号分隔 —— 不另开 body 参数是因为
   // 这个入口要能用 GET 直接分享/预览，跟前三路保持同一种打开方式。
   if (type === 'geo') {
@@ -225,7 +248,7 @@ function resolveTarget(type, c) {
  * 按 type 跑对应审计引擎，并返回对应的 Markdown 报告函数。
  * 不共用一个 reportMarkdown —— 三个引擎各自的口径、记分牌、提示词模板都不一样。
  */
-async function runAudit(type, { owner, repo, pkg, url, brand, domain, questions, competitors, provider }) {
+async function runAudit(type, { owner, repo, pkg, url, user, brand, domain, questions, competitors, provider }) {
   if (type === 'github') {
     const [o, n] = (repo || '').split('/')
     const report = await auditProject({ owner: o, repo: n, token: GITHUB_TOKEN })
@@ -239,6 +262,10 @@ async function runAudit(type, { owner, repo, pkg, url, brand, domain, questions,
     const report = await auditPage({ url })
     return { report, md: reportMarkdownPage }
   }
+  if (type === 'profile') {
+    const report = await auditProfile({ user, token: GITHUB_TOKEN })
+    return { report, md: reportMarkdownProfile }
+  }
   if (type === 'geo') {
     const report = await auditGeo({ brand, domain, questions, competitors, provider })
     return { report, md: reportMarkdownGeo }
@@ -251,7 +278,7 @@ async function runAudit(type, { owner, repo, pkg, url, brand, domain, questions,
  * /api/scorecard 与 /api/scorecard/compare 都走这里，避免两边各维护一份缓存逻辑。
  */
 async function getOrAudit(type, key, opts) {
-  const { repo, pkg, url, brand, domain, questions, competitors, provider, fresh } = opts
+  const { repo, pkg, url, user, brand, domain, questions, competitors, provider, fresh } = opts
   // GEO 不用 30 分钟缓存，两个原因都不是性能：
   //  ① 它要花钱，重复查询直接烧钱；
   //  ② 离线 fixture 和真实 provider 的结果不可比 —— 缓存里如果躺着一份 offline
@@ -274,7 +301,7 @@ async function getOrAudit(type, key, opts) {
    */
   let report
   try {
-    ({ report } = await runAudit(type, { repo, pkg, url, brand, domain, questions, competitors, provider }))
+    ({ report } = await runAudit(type, { repo, pkg, url, user, brand, domain, questions, competitors, provider }))
   } catch (e) {
     report = { error: `审计引擎异常：${e?.message || e}`, errorStatus: 503, score: null }
   }
@@ -310,9 +337,9 @@ const errorStatusOf = (report) => {
 
 app.get('/api/scorecard', async (c) => {
   const type = resolveType(c)
-  if (!type) return c.json({ error: 'type 必填：github | npm | page | geo（github 可省略，靠 ?repo= 推断）' }, 400)
+  if (!type) return c.json({ error: 'type 必填：github | npm | page | profile | geo（github 可省略，靠 ?repo= 推断）' }, 400)
 
-  const { key, repo, pkg, url, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
+  const { key, repo, pkg, url, user, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
   if (!key) return c.json({ error: `${type} 入口缺少目标参数` }, 400)
 
   // type-specific 格式校验
@@ -325,13 +352,16 @@ app.get('/api/scorecard', async (c) => {
   if (type === 'page' && !/^https?:\/\//i.test(key)) {
     return c.json({ error: 'url 必须以 http(s):// 开头' }, 400)
   }
+  if (type === 'profile' && !normalizeProfileTarget(key)) {
+    return c.json({ error: 'user 格式不合法（例：webkubor / @webkubor / github.com/webkubor）' }, 400)
+  }
 
   /*
    * fresh=1 跳过缓存 —— 刚推完整改就复测是最常见的用法，
    * 而 30 分钟缓存会让人拿到整改前的旧分数，误以为改动没生效。
    */
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, user, brand, domain, questions, competitors, provider, fresh })
   if (report?.error) return c.json({ error: report.error }, errorStatusOf(report))
   if (!report || report.score == null) {
     return c.json({ error: report?.error || 'audit returned no score' }, 400)
@@ -713,25 +743,27 @@ function radarPolygon(score) {
 // 为什么是 Markdown 而不是长图：图片好看但是死的，别人看完还得自己动手翻译成任务。
 // Markdown 能直接粘进 Claude Code / Cursor 让它照着改，改完再回来测一次分数
 // —— 传播链多了一环，而且那一环是真正产生价值的一环。
-// 三个审计引擎各自的 reportMarkdown() 提示词模板不同（GitHub 改 README / npm 改 package.json / 网页改配置），
+// 各审计引擎各自的 reportMarkdown() 提示词模板不同（GitHub 改 README / npm 改 package.json / 网页改配置 / 首页改简历），
 // 这里按 type 路由到对应那个。
 app.get('/api/scorecard/report.md', async (c) => {
   const type = resolveType(c)
-  if (!type) return c.text('type 必填：github | npm | page', 400)
-  const { key, repo, pkg, url, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
+  if (!type) return c.text('type 必填：github | npm | page | profile | geo', 400)
+  const { key, repo, pkg, url, user, brand, domain, questions, competitors, provider } = resolveTarget(type, c)
   if (!key) return c.text(`${type} 入口缺少目标参数`, 400)
 
   if (type === 'github' && !/^[\w.-]+\/[\w.-]+$/.test(key)) return c.text('repo must be owner/name', 400)
   if (type === 'npm' && !/^(@[\w.-]+\/)?[\w.-]+$/.test(key)) return c.text('pkg 格式不合法', 400)
   if (type === 'page' && !/^https?:\/\//i.test(key)) return c.text('url 必须以 http(s):// 开头', 400)
+  if (type === 'profile' && !normalizeProfileTarget(key)) return c.text('user 格式不合法（例：webkubor / @webkubor）', 400)
 
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
-  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, brand, domain, questions, competitors, provider, fresh })
+  const { report, cached } = await getOrAudit(type, key, { repo, pkg, url, user, brand, domain, questions, competitors, provider, fresh })
   if (report?.error) return c.text(report.error, errorStatusOf(report))
   if (!report || report.score == null) return c.text('audit returned no score', 400)
 
   const mdFn = type === 'npm' ? reportMarkdownNpm
     : type === 'page' ? reportMarkdownPage
+    : type === 'profile' ? reportMarkdownProfile
     : type === 'geo' ? reportMarkdownGeo
     : reportMarkdownGithub
   const md = mdFn(report, { site: `https://${SITE_URL}` })
@@ -754,14 +786,14 @@ app.get('/api/scorecard/compare', async (c) => {
   const type = (c.req.query('type') || '').toString().toLowerCase().trim()
   const aRaw = (c.req.query('a') || '').toString().trim()
   const bRaw = (c.req.query('b') || '').toString().trim()
-  if (!['github', 'npm', 'page'].includes(type)) return c.json({ error: 'type 必填：github | npm | page' }, 400)
+  if (!['github', 'npm', 'page', 'profile'].includes(type)) return c.json({ error: 'type 必填：github | npm | page | profile' }, 400)
   if (!aRaw || !bRaw) return c.json({ error: 'a / b 必填' }, 400)
   if (aRaw === bRaw) return c.json({ error: 'a 和 b 是同一个目标，没必要比' }, 400)
 
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
 
-  // a / b 各自的 type-specific 参数：github 用 repo / npm 用 pkg / page 用 url
-  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : 'url'
+  // a / b 各自的 type-specific 参数：github 用 repo / npm 用 pkg / page 用 url / profile 用 user
+  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : type === 'profile' ? 'user' : 'url'
   const optsFor = (raw) => {
     if (type === 'github') {
       if (!/^[\w.-]+\/[\w.-]+$/.test(raw)) return { error: `${paramName} 格式应为 owner/name`, report: null }
@@ -771,6 +803,11 @@ app.get('/api/scorecard/compare', async (c) => {
       if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(raw)) return { error: `${paramName} 格式不合法`, report: null }
       return { repo: '', pkg: raw, url: '' }
     }
+    if (type === 'profile') {
+      const u = normalizeProfileTarget(raw)
+      if (!u) return { error: `${paramName} 格式不合法（例：webkubor / @webkubor）`, report: null }
+      return { repo: '', pkg: '', url: '', user: u }
+    }
     if (!/^https?:\/\//i.test(raw)) return { error: `${paramName} 必须以 http(s):// 开头`, report: null }
     return { repo: '', pkg: '', url: raw }
   }
@@ -779,10 +816,11 @@ app.get('/api/scorecard/compare', async (c) => {
   const bOpts = optsFor(bRaw)
   if (aOpts.error || bOpts.error) return c.json({ error: aOpts.error || bOpts.error }, 400)
 
-  // 并发拿两边（不互相阻塞）
+  // 并发拿两边（不互相阻塞）。profile 的 key 归一化成裸 login，@user 与 user 命中同一份缓存
+  const normKey = (raw) => (type === 'profile' ? normalizeProfileTarget(raw) : raw)
   const [aRes, bRes] = await Promise.all([
-    getOrAudit(type, aRaw, { ...aOpts, fresh }),
-    getOrAudit(type, bRaw, { ...bOpts, fresh }),
+    getOrAudit(type, normKey(aRaw), { ...aOpts, fresh }),
+    getOrAudit(type, normKey(bRaw), { ...bOpts, fresh }),
   ])
 
   const errors = []
@@ -821,13 +859,17 @@ app.get('/api/scorecard/compare.md', async (c) => {
   const type = (c.req.query('type') || '').toString().toLowerCase().trim()
   const aRaw = (c.req.query('a') || '').toString().trim()
   const bRaw = (c.req.query('b') || '').toString().trim()
-  if (!['github', 'npm', 'page'].includes(type)) return c.text('type 必填：github | npm | page', 400)
+  if (!['github', 'npm', 'page', 'profile'].includes(type)) return c.text('type 必填：github | npm | page | profile', 400)
   if (!aRaw || !bRaw) return c.text('a / b 必填', 400)
 
-  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : 'url'
+  const paramName = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : type === 'profile' ? 'user' : 'url'
   const optsFor = (raw) => {
     if (type === 'github') return /^[\w.-]+\/[\w.-]+$/.test(raw) ? { repo: raw, pkg: '', url: '' } : { error: `${paramName} 格式应为 owner/name` }
     if (type === 'npm') return /^(@[\w.-]+\/)?[\w.-]+$/.test(raw) ? { repo: '', pkg: raw, url: '' } : { error: `${paramName} 格式不合法` }
+    if (type === 'profile') {
+      const u = normalizeProfileTarget(raw)
+      return u ? { repo: '', pkg: '', url: '', user: u } : { error: `${paramName} 格式不合法（例：webkubor / @webkubor）` }
+    }
     return /^https?:\/\//i.test(raw) ? { repo: '', pkg: '', url: raw } : { error: `${paramName} 必须以 http(s):// 开头` }
   }
   const aOpts = optsFor(aRaw)
@@ -835,9 +877,10 @@ app.get('/api/scorecard/compare.md', async (c) => {
   if (aOpts.error || bOpts.error) return c.text(aOpts.error || bOpts.error, 400)
 
   const fresh = ['1', 'true', 'yes'].includes((c.req.query('fresh') || '').toString().toLowerCase())
+  const normKey = (raw) => (type === 'profile' ? normalizeProfileTarget(raw) : raw)
   const [aRes, bRes] = await Promise.all([
-    getOrAudit(type, aRaw, { ...aOpts, fresh }),
-    getOrAudit(type, bRaw, { ...bOpts, fresh }),
+    getOrAudit(type, normKey(aRaw), { ...aOpts, fresh }),
+    getOrAudit(type, normKey(bRaw), { ...bOpts, fresh }),
   ])
   if (aRes.report?.error || bRes.report?.error) {
     const firstErrored = aRes.report?.error ? aRes.report : bRes.report
@@ -930,6 +973,7 @@ app.get('/api/skill', async (c) => {
         reportMd: `/api/scorecard/report.md?repo=owner/name`,
         npm: `/api/scorecard?type=npm&pkg=<name>`,
         page: `/api/scorecard?type=page&url=https://...`,
+        profile: `/api/scorecard?type=profile&user=<login>`,
         compare: `/api/scorecard/compare?type=page&a=<urlA>&b=<urlB>`,
         history: `/api/scorecard/history?target=owner/name`,
         geo: `/api/scorecard?type=geo&brand=<name>`,
@@ -937,7 +981,7 @@ app.get('/api/skill', async (c) => {
       notes: [
         '免登录；公开仓库走 GitHub 匿名 API（60 次/小时/IP），私有仓库需要服务端配 token',
         'score 为 null 表示该维度「无法核实」，不是 0 分；报告与历史接口都按这个口径处理',
-        '三路引擎（github 9 维 / npm 7 维 / page 9 维）判据互不通用，不给统一总分',
+        '五路引擎（github 9 维 / npm 7 维 / page 9 维 / profile 7 维 / geo 4 维）判据互不通用，不给统一总分',
       ],
       bytes: Buffer.byteLength(body),
     })

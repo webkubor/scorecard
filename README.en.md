@@ -5,7 +5,7 @@
 [![online status](https://img.shields.io/website-up-down-green-red/https/scorecard.webkubor.online.svg)](https://scorecard.webkubor.online)
 [![issues](https://img.shields.io/github/issues/webkubor/scorecard.svg)](https://github.com/webkubor/scorecard/issues)
 
-> Paste a **GitHub URL / npm package name / webpage URL**, get a per-target-type quality report in seconds: radar chart, an action list sorted by `impact ÷ cost`, and a Markdown report you can hand straight to an AI. **Compare two targets** (test env ↔ prod env, you ↔ a competitor) to see exactly where they diverge. No login, public repos no token needed.
+> Paste a **GitHub URL / npm package name / webpage URL / @GitHub username**, get a per-target-type quality report in seconds: radar chart, an action list sorted by `impact ÷ cost`, and a Markdown report you can hand straight to an AI. **Compare two targets** (test env ↔ prod env, you ↔ a competitor) to see exactly where they diverge. No login, public repos no token needed.
 
 **Live**: <https://scorecard.webkubor.online>
 
@@ -20,13 +20,14 @@
 
 *"Where is my project actually weak?"* — repo, package, or site.
 
-Star count tells you the outcome, not the cause. Scorecard splits quality into **three independent engines** with their own criteria (no merging — folding npm "weekly downloads" into GitHub "star growth" systematically mis-scores both):
+Star count tells you the outcome, not the cause. Scorecard splits quality into **five independent engines** with their own criteria (no merging — folding npm "weekly downloads" into GitHub "star growth" systematically mis-scores both):
 
 | Input | Engine | Dims | Mostly checks |
 |---|---|---:|---|
 | GitHub repo | `server/audit.js` | 9 | description / topics / CI / issue response / llms.txt |
 | npm package | `server/audit-npm.js` | 7 | registry metadata + weekly/monthly downloads + docs + security + AI readability |
 | Any webpage | `server/audit-page.js` | 9 | includes **AI identification** (llms.txt / schema.org), **crawler root** (robots / sitemap / .well-known / favicon), **WebMCP friendliness** (mcp.json / ai-plugin / openapi) |
+| GitHub profile | `server/audit-profile.js` | 7 | your homepage as a résumé: identity / profile README / **visuals** (stats cards / streak / skill icons / snake) / activity / portfolio / impact / reach |
 
 The output isn't just a score — it's an **actionable list**. Every item comes with evidence and a "+X points if you fix this" estimate, plus a one-click copy as a fix-it prompt you can hand to an AI.
 
@@ -67,10 +68,11 @@ The token is server-side only and never sent to the front-end.
 ## CLI
 
 ```bash
-# Three engines (type inferred: URL → page, pkg name → npm, owner/repo → github)
+# Engines (type inferred: URL → page, pkg name → npm, owner/repo → github, @user → profile)
 scorecard webkubor/scorecard                    # GitHub repo (9 dims)
 scorecard react --type npm                      # npm package (7 dims)
 scorecard https://example.com --type page       # webpage (9 dims)
+scorecard @webkubor --type profile              # GitHub profile as a résumé (7 dims)
 
 # Side-by-side compare of two same-type targets
 scorecard --compare-a https://test.example.com \
@@ -146,6 +148,7 @@ All endpoints are no-login (except GitHub dims, which can take a token for rate 
 | `GET /api/scorecard?repo=owner/name` | GitHub repo, 9 dims (30-min cache per target) |
 | `GET /api/scorecard?type=npm&pkg=react` | npm package, 7 dims |
 | `GET /api/scorecard?type=page&url=https://...` | Any webpage, 9 dims |
+| `GET /api/scorecard?type=profile&user=webkubor` | GitHub profile homepage, 7 dims (résumé view) |
 | `GET /api/scorecard/report.md?type=...&...` | Same report as Markdown, written for an AI assistant |
 | `GET /api/scorecard/compare?type=...&a=X&b=Y` | Two-target compare: both reports + per-dim diff |
 | `GET /api/scorecard/compare.md?type=...&a=X&b=Y` | Compare report as Markdown |

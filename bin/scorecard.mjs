@@ -12,10 +12,11 @@
  * 所以这层薄封装的意义不在功能，在**让它出现在该出现的时刻**：
  *   scorecard owner/repo --min 6    # 低于 6 分退出码 1，可直接卡在 CI / 发布脚本里
  *
- * 四种审计入口、各自判据集，不互通：
+ * 五种审计入口、各自判据集，不互通：
  *   scorecard webkubor/reel-kit              GitHub 仓库（9 维）
  *   scorecard react --type npm               npm 包（7 维）
  *   scorecard https://example.com --type page  网页（9 维，含 AI 识别 / 爬虫根目录 / WebMCP）
+ *   scorecard @webkubor --type profile       GitHub 个人首页（7 维：把首页当简历测）
  *   scorecard geo --brand X --q "..."        GEO（4 维，品牌在 AI 答案里的可见度）
  *
  * 用法：
@@ -27,6 +28,23 @@
  */
 
 const DEFAULT_API = process.env.SCORECARD_API || 'https://scorecard.webkubor.online'
+
+/**
+ * 目标形态 → type。单目标与 --compare 共用一份规则，免得「单目标认得、对比不认得」：
+ *   @user / github.com/<user>（只有一段路径）→ profile —— 个人首页
+ *   owner/repo → github · npm 包名形态 → npm · 其它 http(s) URL → page
+ * 裸单词刻意仍按 npm（scorecard react 历来是测包）：要测某人首页，加 @ 或 --type profile，
+ * 否则两个意图会抢同一个输入。
+ */
+function inferType(s) {
+  const t = String(s || '').trim()
+  if (/^@[\w.-]+$/.test(t)) return 'profile'
+  if (/^github\.com\/[\w.-]+\/?$/i.test(t.replace(/^https?:\/\//i, ''))) return 'profile'
+  if (/^https?:\/\//i.test(t)) return 'page'
+  if (/^(@[\w.-]+\/)?[\w.-]+$/.test(t)) return 'npm'
+  if (/^[\w.-]+\/[\w.-]+$/.test(t)) return 'github'
+  return null
+}
 
 function parseArgs(argv) {
   const out = { _: [] }
@@ -46,16 +64,18 @@ function parseArgs(argv) {
 }
 
 const HELP = `
-scorecard — 开源项目质检（GitHub / npm / 网页 / GEO 四路）
+scorecard — 开源项目质检（GitHub / npm / 网页 / GitHub 首页 / GEO 五路）
 
 用法:
   scorecard <owner/repo> [选项]              # GitHub 仓库质检（默认）
   scorecard <pkg> --type npm [选项]          # npm 包质检
   scorecard <url> --type page [选项]         # 网页质检
+  scorecard <user> --type profile [选项]     # GitHub 个人首页质检（github.com/<user> 当简历测）
+                                             # @user / github.com/<user> 形态可省 --type
   scorecard geo --brand <名> --q <问题> ...  # GEO：品牌在 AI 答案里的可见度
 
 选项:
-  --type <类型>   入口类型：github | npm | page（缺省按 <arg> 形式推断）
+  --type <类型>   入口类型：github | npm | page | profile（缺省按 <arg> 形式推断）
   --compare-a <X> --compare-b <Y>
                   对比两个目标（主用例：测试 env vs 线上 env）。type 必须一致。
   --json          输出原始 JSON（agent 解析用）
@@ -81,6 +101,7 @@ GEO 专用选项:
   scorecard webkubor/reel-kit
   scorecard react --type npm
   scorecard https://anthropic.com --type page
+  scorecard @webkubor --type profile     # 测自己的 GitHub 首页（简历视角）
   scorecard webkubor/reel-kit --min 6      # 不达标就让脚本失败
   scorecard webkubor/reel-kit --md > report.md
   scorecard --compare-a https://test.example.com --compare-b https://example.com --type page
@@ -144,12 +165,10 @@ async function main() {
     const a = (args['compare-a'] || '').toString().trim()
     const b = (args['compare-b'] || '').toString().trim()
     if (!a || !b) { console.error('❌ --compare-a 和 --compare-b 都要填'); process.exit(1) }
-    const inferred = (s) => /^https?:\/\//i.test(s) ? 'page'
-      : /^(@[\w.-]+\/)?[\w.-]+$/.test(s) ? 'npm'
-      : /^[\w.-]+\/[\w.-]+$/.test(s) ? 'github'
-      : null
+    // 形态推断与单目标共用一份规则，免得「单目标认得、对比不认得」
+    const inferred = inferType
     let type = (args.type || '').toString().toLowerCase()
-    if (type && !['github', 'npm', 'page'].includes(type)) { console.error('❌ --type 只接受 github|npm|page'); process.exit(1) }
+    if (type && !['github', 'npm', 'page', 'profile'].includes(type)) { console.error('❌ --type 只接受 github|npm|page|profile'); process.exit(1) }
     if (!type) {
       const ta = inferred(a), tb = inferred(b)
       if (!ta || !tb) { console.error('❌ --compare 的两个目标都需可识别，加 --type 显式指定'); process.exit(1) }
@@ -298,18 +317,18 @@ async function main() {
 
   // type 推断：--type 优先，否则按形态猜
   const explicitType = (args.type || '').toString().toLowerCase()
-  const validTypes = ['github', 'npm', 'page']
+  const validTypes = ['github', 'npm', 'page', 'profile']
   let type
   if (explicitType) {
     if (!validTypes.includes(explicitType)) { console.error(`❌ --type 只接受 ${validTypes.join('/')}`); process.exit(1) }
     type = explicitType
-  } else if (/^https?:\/\//i.test(target)) type = 'page'
-  else if (/^(@[\w.-]+\/)?[\w.-]+$/.test(target)) type = 'npm'
-  else if (/^[\w.-]+\/[\w.-]+$/.test(target)) type = 'github'
-  else { console.error(`❌ 目标格式无法识别：${target}\n   带 https:// 当 URL，否则 owner/repo 当仓库，单段名当 npm 包。\n   或显式 --type npm|page`); process.exit(1) }
+  } else {
+    type = inferType(target)
+    if (!type) { console.error(`❌ 目标格式无法识别：${target}\n   带 https:// 当 URL，owner/repo 当仓库，单段名当 npm 包，@user 当 GitHub 首页。\n   或显式 --type npm|page|profile`); process.exit(1) }
+  }
 
   // type-specific 入口参数名
-  const typeParam = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : 'url'
+  const typeParam = type === 'github' ? 'repo' : type === 'npm' ? 'pkg' : type === 'profile' ? 'user' : 'url'
   // backward-compat: --md 的 github 路径也可以用 ?repo=
   const queryStr = type === 'github'
     ? `repo=${encodeURIComponent(target)}`
@@ -345,13 +364,15 @@ async function main() {
   if (args.json) { console.log(JSON.stringify(report, null, 2)); return }
 
   const score = Number(report.score)
-  const typeLabel = { github: 'GitHub 仓库', npm: 'npm 包', page: '网页' }[type]
+  const typeLabel = { github: 'GitHub 仓库', npm: 'npm 包', page: '网页', profile: 'GitHub 首页' }[type]
   const starsHint = report.stars && report.stars > 0 ? ` · ⭐${report.stars}` : ''
   const extra = type === 'npm' && report.weeklyDownloads != null
     ? ` · 周下载 ${report.weeklyDownloads.toLocaleString('en-US')}`
     : type === 'page' && report.ttfb != null
       ? ` · TTFB ${report.ttfb}ms`
-      : ''
+      : type === 'profile'
+        ? ` · ${report.followers ?? '?'} followers${report.contributions != null ? ` · 年贡献 ${report.contributions}` : ''}`
+        : ''
   console.log(`\n  ${target}   ${score} 分 · ${report.band || ''}${starsHint}${extra}${payload.cached ? '  (缓存)' : ''}  [${typeLabel}]\n`)
 
   for (const d of report.dims || []) {

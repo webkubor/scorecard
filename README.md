@@ -7,7 +7,7 @@
 
 > **做决定之前，先跑一次体检。**
 >
-> 粘一个 **GitHub 仓库 / npm 包名 / 网页 URL**，几秒钟拿到一份体检报告：
+> 粘一个 **GitHub 仓库 / npm 包名 / 网页 URL / @GitHub 用户名**，几秒钟拿到一份体检报告：
 > 九维度雷达图、按「影响÷成本」排序的整改清单，一份可直接粘给 AI 的 Markdown 报告。
 > 免登录，公开仓库无需 token。
 
@@ -17,15 +17,17 @@ OpenSSF 那个管**供应链安全** —— 依赖有没有钉版本、token 权
 发布工程规不规范，面向「我这个仓拿出手吗、能不能交给别人用」。
 两个方向互补，不重叠。
 
-四套引擎（GitHub 9 维 / npm 7 维 / 网页 9 维 / GEO 4 维）**判据互不通用** ——
-把 npm 包的「周下载」塞进 GitHub 仓的「star 增速」位会系统性误判。
+五套引擎（GitHub 仓库 9 维 / npm 7 维 / 网页 9 维 / GitHub 首页 7 维 / GEO 4 维）
+**判据互不通用** —— 把 npm 包的「周下载」塞进 GitHub 仓的「star 增速」位会系统性误判，
+拿仓库的九维去评一个人的门面同样会失真。
 
-**四个入口，对应四种「我该拿它干嘛」**：
+**五个入口，对应五种「我该拿它干嘛」**：
 
 | 我要做的事 | 入口 | 它会告诉我 |
 |---|---|---|
 | 刚开源，不知道差在哪 | <https://scorecard.webkubor.online> | 别人第一眼会看到什么、文档够不够用 |
 | 要发版，想补齐门面 | 同上 | tag / Release / CHANGELOG / CI 少了哪套仪式 |
+| 把 GitHub 首页当简历经营 | 同上，输 `@用户名` | 首页缺哪块：README 简历感、可视化组件、活跃轨迹 |
 | 交给 coding agent 改 | [`/skill.md`](https://scorecard.webkubor.online/skill.md) | 让 agent 按同一套判据先看清现状 |
 | 一堆仓库，先修哪个 | `/api/scorecard/compare` | 逐维度差分，哪边领先、差在哪 |
 
@@ -40,7 +42,7 @@ OpenSSF 那个管**供应链安全** —— 依赖有没有钉版本、token 权
 
 「我这个项目，到底差在哪？」（项目 / 包 / 站点都行）
 
-star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆三套独立判据，
+star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆各套独立判据，
 每条结论只看**客观证据**——API 拿得到、文件在不在、状态码是多少：
 
 | 入口 | 引擎 | 维度数 | 主要看什么 |
@@ -48,9 +50,10 @@ star 数只告诉你结果，不告诉你原因。Scorecard 按目标类型拆�
 | GitHub 仓库 | `server/audit.js` | 9 | description / topics / CI / issue 响应 / llms.txt 等 |
 | npm 包 | `server/audit-npm.js` | 7 | registry 元数据 + 周/月下载 + 文档 + 安全 + AI 可读性 |
 | 任意网页 | `server/audit-page.js` | 9 | 含 **AI 识别**（llms.txt / schema.org）、**爬虫根目录**（robots / sitemap / .well-known / favicon）、**WebMCP 友好性**（mcp.json / ai-plugin / openapi）等 |
+| GitHub 个人首页 | `server/audit-profile.js` | 7 | 把 `github.com/<user>` 当简历测：身份门面 / 首页自述 / **可视化**（stats 卡 / streak / 技能图标 / 贪吃蛇）/ 活跃度 / 作品集 / 影响力 / 链接触达 |
 | 品牌 | `server/audit-geo.js` | 4 | AI 答案里的提及率 / 引用率 / 竞品份额 / 评价倾向（见下节） |
 
-四套维度**互不通用**——把 npm 包的"周下载"塞进 GitHub 仓的"star 增速"位会系统性误判，
+五套维度**互不通用**——把 npm 包的"周下载"塞进 GitHub 仓的"star 增速"位会系统性误判，
 所以引擎、判据、报告模板各自独立。
 
 输出不是一个分数了事，而是一份**可执行清单**——每条都带证据和「改完预计 +X 分」，
@@ -83,7 +86,7 @@ Scorecard 的做法：读不到的判据从分母里剔除，该维度标 `score
 1. **只判客观项。** 判据限定在 API 拿得到、文件在不在、状态码是多少。
    主观项（「10 秒看不看得懂」「logo 是否与品牌统一」）判不了可复现，
    单列在 `skills/project-maturity-audit/`，不进网页引擎。
-2. **三套引擎互不通用。** GitHub 9 维 / npm 7 维 / 网页 9 维 / GEO 4 维，判据各自独立。
+2. **各套引擎互不通用。** GitHub 仓库 9 维 / npm 7 维 / 网页 9 维 / GitHub 首页 7 维 / GEO 4 维，判据各自独立。
 3. **分数可被人推翻。** 每条结论都附证据原文与来源 URL，不同意可以对着证据直接反驳。
 
 计分口径是「拿到多少判据就归一化多少」（`normalizeDim(score, unv)`），
@@ -139,7 +142,7 @@ Scorecard 的做法：读不到的判据从分母里剔除，该维度标 `score
 
 ## GEO —— 测品牌在 AI 答案里的可见度
 
-前三套测的是「你自己的东西做得好不好」，GEO 测的是**别人问 AI 时你会不会被提到**。
+前面几套测的是「你自己的东西做得好不好」，GEO 测的是**别人问 AI 时你会不会被提到**。
 入口：<https://scorecard.webkubor.online/#/geo>，或落地页顶部那张卡片。
 
 要四个输入：品牌名、自有域名、**用户会问的问题清单**、竞品。四维：
