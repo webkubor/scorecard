@@ -653,13 +653,13 @@ app.get('/og/scorecard/:owner/:repo', async (c) => {
     <!-- repo -->
     <text x="60" y="180" font-size="28" font-weight="600" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, monospace">${escapeXml(owner)}/${escapeXml(repo)}</text>
 
-    <!-- big score -->
-    <text x="60" y="380" font-size="180" font-weight="800" fill="${color}" letter-spacing="-4">${score}</text>
-    <text x="${60 + String(score).length * 90}" y="380" font-size="48" font-weight="500" fill="#6e7681">/10</text>
+    <!-- big score：/10 跟着分数走（tspan），不手动算 x ——
+         比例字体下 "8.1" 的实际宽度跟字符数对不上，手算 x 会让 /10 压住分数 -->
+    <text x="60" y="380" font-size="180" font-weight="800" fill="${color}" letter-spacing="-4">${score}<tspan font-size="48" font-weight="500" fill="#6e7681" dx="6">/10</tspan></text>
 
     <!-- band -->
     <text x="60" y="430" font-size="26" font-weight="600" fill="${color}">${escapeXml(band)}</text>
-    <text x="60" y="464" font-size="20" fill="#8b949e">⭐ ${starLabel} · type: ${escapeXml(cached?.type || 'unknown')}</text>
+    <text x="60" y="464" font-size="20" fill="#8b949e">★ ${starLabel} · type: ${escapeXml(cached?.type || 'unknown')}</text>
 
     <!-- 核实口径：公开说明这份分数覆盖了几维 -->
     <text x="60" y="500" font-size="19" fill="#6e7681">${escapeXml(verifyLine)}</text>
