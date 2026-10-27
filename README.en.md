@@ -1,3 +1,5 @@
+<p align="center"><img src="https://cdn.jsdelivr.net/gh/webkubor/free-imgbed@main/scorecard/logo.svg" width="96" alt="Scorecard logo"></p>
+
 # Scorecard
 
 [![license](https://img.shields.io/github/license/webkubor/scorecard.svg)](./LICENSE)
