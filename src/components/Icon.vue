@@ -14,13 +14,9 @@ defineProps({
     aria-hidden="true"
     class="brand-icon"
   >
-    <!-- 品牌标记：开口评分环 + 缺口圆点。
-         与 public/logo.svg、public/favicon.svg 同一设计，三处按各自尺寸重算过坐标 —— 
-         16px 下环半径要收紧，否则留白吃掉图形本身。用 stroke 而非 fill，
-         这样它跟 currentColor 走，深浅底各一次即可。 -->
     <g v-if="name === 'brand'">
-      <path d="M 9.85 2.93 A 5.4 5.4 0 1 0 13.07 6.15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
-      <circle cx="11.82" cy="4.18" r="1.35"/>
+      <path d="m8 2 3.2 2 1.3 3.5-3 3-4.5-.8-1.8-3.7 1.8-2.8Z" fill="currentColor" fill-opacity=".24" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+      <path d="m6.3 7.8 1.2 1.2 2.4-2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
 
     <g v-else-if="name === 'fire'">
